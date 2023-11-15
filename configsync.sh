@@ -1,6 +1,6 @@
 #!/bin/bash
 
-RSYNC=$(sudo rsync -aizhe "ssh -i /home/$USER/.ssh/id_rsa" kien@192.168.18.71:/etc/nginx/ /etc/nginx/)
+RSYNC=$(sudo rsync -aizhe "ssh -i /home/kien/.ssh/id_rsa" kien@192.168.18.71:/etc/nginx/ /etc/nginx/)
 
 if [ $? -eq 0 ]; then
         if [ -n "${RSYNC}" ]; then
