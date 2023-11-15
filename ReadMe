@@ -1,0 +1,95 @@
+### Install dependency
+sudo apt update
+sudo apt-get install -y vim net-tools git cron rsync build-essential libmaxminddb-dev libpcre3-dev libssl-dev libpcre3 zlib1g zlib1g-dev
+
+###Basic
+sudo hostnamectl set-hostname Nginx02
+
+sudo vim /etc/netplan/00-installer-config.yaml ### Sua ip
+
+sudo netplan apply
+
+###Clone github file
+cd ~
+sudo git clone https://github.com/kiennt048/naxsi.git
+
+### Install nginx
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl status nginx
+sudo nginx -v
+
+
+
+
+
+### Install Keep alive
+sudo apt-get install -y keepalived
+sudo systemctl enable keepalived
+
+sudo vim ~/naxsi/keepalived.conf ###modifi the router ID, priority, ip of real server and VIP
+
+sudo cp ~/naxsi/check_nginx.sh /etc/keepalived
+sudo cp ~/naxsi/keepalived.conf /etc/keepalived
+sudo systemctl restart keepalived
+sudo systemctl status keepalived
+
+### Install copy script 
+## backup server
+ssh-keygen ### enter enter enter ....
+ssh-copy-id kien@192.168.18.71  ###copy ssh key from backup to main server
+### Yess >> Enter user password of main server
+
+###Modifi IP and User of at configsync.sh
+sudo vim ~/naxsi/configsync.sh  ### Check backup script
+sudo chmod 777 ~/naxsi/configsync.sh
+
+### Create crontab
+sudo crontab -e 
+* * * * * sh /home/kien/naxsi/configsync.sh ###change path and add to end line
+sudo systemctl restart cron
+
+#run manual backup 1 time to add know host file (can disable it  "Bypassing SSH Server Verification by Configuration")
+sudo rsync -aizhe "ssh -i /home/kien/.ssh/id_rsa" kien@192.168.18.71:/etc/nginx/ /etc/nginx/
+
+
+### Manual Check backup script to working well or not.
+
+
+### Install Nginx UI
+wget https://raw.githubusercontent.com/0xJacky/nginx-ui/master/install.sh
+sudo bash install.sh install
+
+
+### Install WAF 
+cd ~
+export NAXSI_VER=1.6
+wget https://github.com/wargio/naxsi/releases/download/$NAXSI_VER/naxsi-$NAXSI_VER-src-with-deps.tar.gz -O naxsi-$NAXSI_VER-src-with-deps.tar.gz
+
+export NGINX_VER=1.18.0
+wget https://nginx.org/download/nginx-$NGINX_VER.tar.gz
+wget https://nginx.org/download/nginx-$NGINX_VER.tar.gz.asc
+gpg --recv-key 520A9993A1C052F8
+gpg --verify nginx-$NGINX_VER.tar.gz.asc
+
+rm nginx-$NGINX_VER.tar.gz.asc 
+mkdir -p naxsi-$NAXSI_VER
+tar -C naxsi-$NAXSI_VER -xzf naxsi-$NAXSI_VER-src-with-deps.tar.gz
+tar vxf nginx-$NGINX_VER.tar.gz 
+cd nginx-$NGINX_VER  
+wget https://github.com/leev/ngx_http_geoip2_module/archive/refs/tags/3.3.tar.gz
+tar vxf 3.3.tar.gz
+
+./configure --with-cc-opt='-g -O2 -ffile-prefix-map=/build/nginx-zctdR4/nginx-1.18.0=. -flto=auto -ffat-lto-objects -flto=auto -ffat-lto-objects -fstack-protector-strong -Wformat -Werror=format-security -fPIC -Wdate-time -D_FORTIFY_SOURCE=2' --with-ld-opt='-Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -flto=auto -Wl,-z,relro -Wl,-z,now -fPIC' --prefix=/usr/share/nginx --conf-path=/etc/nginx/nginx.conf --http-log-path=/var/log/nginx/access.log --error-log-path=/var/log/nginx/error.log --lock-path=/var/lock/nginx.lock --pid-path=/run/nginx.pid --modules-path=/usr/lib/nginx/modules --http-client-body-temp-path=/var/lib/nginx/body --http-fastcgi-temp-path=/var/lib/nginx/fastcgi --http-proxy-temp-path=/var/lib/nginx/proxy --http-scgi-temp-path=/var/lib/nginx/scgi --http-uwsgi-temp-path=/var/lib/nginx/uwsgi --with-compat --with-debug --with-pcre-jit --with-http_ssl_module --with-http_stub_status_module --with-http_realip_module --with-http_auth_request_module --with-http_v2_module --with-http_dav_module --with-http_slice_module --with-threads --add-dynamic-module=/home/kien/nginx-1.18.0/ngx_http_geoip2_module-3.3 --with-http_addition_module --with-http_gunzip_module --with-http_gzip_static_module --with-http_sub_module --add-dynamic-module=../naxsi-$NAXSI_VER/naxsi_src/
+
+make modules
+
+sudo mkdir /etc/nginx/modules
+sudo cp objs/ngx_http_naxsi_module.so /etc/nginx/modules/ngx_http_naxsi_module.so
+
+sudo cp ~/naxsi/naxsi.rules /etc/nginx
+sudo cp ~/naxsi/naxsi_core.rules /etc/nginx
+sudo cp ~/naxsi/nginx.conf /etc/nginx
+sudo cp ~/naxsi/block.html /var/www/html/block.html
+
+sudo systemctl restart nginx
