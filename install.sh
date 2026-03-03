@@ -299,6 +299,11 @@ install_naxsi_config() {
     cp "${SCRIPT_DIR}/naxsi-manager.sh" /usr/local/bin/naxsi-manager
     chmod 755 /usr/local/bin/naxsi-manager
 
+    # Install AI security agent
+    cp "${SCRIPT_DIR}/naxsi-ai-agent.sh" /usr/local/bin/naxsi-ai-agent
+    chmod 755 /usr/local/bin/naxsi-ai-agent
+    mkdir -p /var/lib/naxsi-ai-agent/reports
+
     # Generate nginx.conf
     generate_nginx_conf
 
@@ -567,7 +572,9 @@ do_uninstall() {
     rm -f /var/www/html/block.html
     rm -f /usr/local/bin/naxsi-config-sync.sh
     rm -f /usr/local/bin/naxsi-manager
+    rm -f /usr/local/bin/naxsi-ai-agent
     rm -rf /etc/nginx/naxsi_backups
+    rm -rf /var/lib/naxsi-ai-agent
 
     # Remove cron entry
     if crontab -l 2>/dev/null | grep -qF "naxsi-config-sync"; then
@@ -658,6 +665,12 @@ print_summary() {
     echo ""
     echo -e "  ${BLUE}Manage learning mode & whitelists:${NC}"
     echo "    sudo naxsi-manager"
+    echo ""
+    echo -e "  ${BLUE}AI Security Agent (on-demand analysis):${NC}"
+    echo "    sudo naxsi-ai-agent analyze          # One-shot log analysis"
+    echo "    sudo naxsi-ai-agent auto-whitelist   # Auto-apply safe rules"
+    echo "    sudo naxsi-ai-agent investigate <ip> # Investigate a blocked IP"
+    echo "    sudo naxsi-ai-agent request <ip>     # User access request"
     echo ""
 }
 

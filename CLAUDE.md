@@ -23,6 +23,7 @@ naxsi/
 ├── ReadMe                           # Installation and setup instructions
 ├── install.sh                       # Automated installer for Ubuntu 22.04/24.04
 ├── naxsi-manager.sh                 # Interactive learning mode & whitelist manager
+├── naxsi-ai-agent.sh                # AI security agent — autonomous log analysis & decisions
 ├── nginx.conf                       # Nginx configuration template
 ├── naxsi.rules                      # Naxsi WAF runtime rules (thresholds)
 ├── naxsi_core.rules                 # Core WAF detection rules (pattern matching)
@@ -93,6 +94,7 @@ Full-featured installer script with:
 - Blocking rules deployment (scanner, web security, PHP, SQL, WordPress)
 - Dynamic `nginx.conf` generation with security hardening
 - naxsi-manager installation for learning mode & whitelist management
+- AI security agent installation for autonomous log analysis
 - Keepalived configuration with generated or user-supplied VRRP password
 - Config sync setup with SSH key generation (backup nodes)
 - `--uninstall` flag for clean removal
@@ -110,6 +112,33 @@ Interactive CLI tool (`sudo naxsi-manager`) for:
 - Applying approved rules to `naxsi_whitelist.rules` and reloading Nginx
 - Removing individual whitelist rules
 - Automatic backups before any config change
+
+### naxsi-ai-agent.sh — AI Security Agent
+
+On-demand security analysis tool (`sudo naxsi-ai-agent`) that acts as an autonomous security engineer:
+
+- **Analyze** (`analyze`): One-shot log analysis — classifies every rule trigger as SAFE, SUSPICIOUS, or ATTACK with detailed reasoning
+- **Auto-whitelist** (`auto-whitelist`): Applies only rules classified as SAFE (high hits + many unique IPs + low/medium risk). Requires confirmation before applying
+- **Investigate** (`investigate <ip-or-uri>`): Explains why a specific IP or URI is being blocked — shows triggered rules, risk levels, IP diversity, and a recommendation
+- **Request** (`request <ip> [uri]`): User requests access — agent independently decides APPROVE/DENY with explanation. Does NOT blindly follow user requests
+- **Report** (`report`): Security summary with top blocked IPs, top rules, decision history
+- **Policy** (`policy`): Shows current security thresholds and decision framework
+
+**Design philosophy — on-demand, not real-time:**
+- All commands are one-shot (run, analyze, exit) — no persistent process, no ongoing cost
+- User starts the agent when they have accumulated logs, agent processes everything at once
+- When a user reports a problem, the operator runs `investigate` or `request` with the user's IP
+- The agent makes independent security decisions — it will DENY requests that trigger critical rules even if the user insists
+
+**Security policy thresholds** (configurable at top of script):
+- Auto-whitelist requires ≥50 hits AND ≥10 unique IPs
+- Rules 17, 18, 1202, 1203, 1204 are NEVER auto-whitelisted (libinjection, path probes)
+- Single-IP dominance (>80% of hits from one source) triggers SUSPICIOUS classification
+- Each rule has a risk level: low, medium, high, critical
+
+**State files:**
+- Agent log: `/var/log/naxsi-ai-agent.log`
+- Decision history: `/var/lib/naxsi-ai-agent/decisions.log`
 
 ### WAF Rules
 

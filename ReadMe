@@ -170,6 +170,79 @@ sudo naxsi-manager learn-off
 
 ---
 
+## AI Security Agent
+
+The AI security agent (`naxsi-ai-agent`) provides on-demand, autonomous log analysis.
+It runs as a **one-shot command** (not a daemon) — start it, it processes logs, it exits.
+No ongoing cost.
+
+### Commands
+
+```
+sudo naxsi-ai-agent analyze               One-shot log analysis with classification
+sudo naxsi-ai-agent auto-whitelist        Auto-apply rules classified as SAFE
+sudo naxsi-ai-agent investigate <ip>      Why is this IP being blocked?
+sudo naxsi-ai-agent investigate <uri>     Why is this URI triggering rules?
+sudo naxsi-ai-agent request <ip> [uri]    User requests access — agent decides
+sudo naxsi-ai-agent report                Security summary report
+sudo naxsi-ai-agent policy                Show security thresholds
+```
+
+### Typical workflow
+
+**Scenario 1: Initial setup — bulk process existing logs**
+
+```bash
+# You already have tons of access/error logs accumulated
+# Run the agent once to analyze everything and auto-whitelist safe patterns
+sudo naxsi-ai-agent analyze                # See what's happening
+sudo naxsi-ai-agent auto-whitelist         # Apply safe rules (agent confirms)
+# Done. Agent exits. No ongoing cost.
+```
+
+**Scenario 2: User reports they can't connect**
+
+```bash
+# User says: "I can't access the checkout page from 10.0.0.50"
+# You ask the agent to investigate:
+sudo naxsi-ai-agent investigate 10.0.0.50
+
+# Agent responds with:
+#   - Which rules blocked this IP
+#   - Risk level of each rule
+#   - Whether other IPs trigger the same rules
+#   - Its APPROVE/DENY recommendation with reasoning
+
+# Or let the agent make a formal decision:
+sudo naxsi-ai-agent request 10.0.0.50 /checkout
+# Agent will APPROVE if traffic is safe, DENY if it looks like an attack
+# It explains WHY in both cases
+```
+
+### How the agent decides
+
+The agent does NOT blindly follow user requests. It acts as an independent security engineer:
+
+| Signal | Meaning | Decision |
+|--------|---------|----------|
+| Critical rule triggered (libinjection, /etc/passwd) | Real attack | **DENY** always |
+| High-risk + few IPs | Possible attack | **DENY**, pending review |
+| Low-risk + many hits + many IPs | False positive | **APPROVE** |
+| Low data | Can't tell yet | **DEFER**, suggest learning mode |
+| 80%+ hits from one IP | Targeted attack or bot | **SUSPICIOUS** |
+
+### Security policy
+
+Auto-whitelist requires ALL of:
+- ≥50 hits on the rule
+- ≥10 unique IPs triggering it
+- Rule risk is low or medium (not high/critical)
+- Not in the never-whitelist list (rules 17, 18, 1202, 1203, 1204)
+
+Run `sudo naxsi-ai-agent policy` to see all thresholds.
+
+---
+
 ## Testing the WAF
 
 ```bash
