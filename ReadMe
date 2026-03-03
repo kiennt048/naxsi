@@ -1,95 +1,211 @@
-### Install dependency
+# Naxsi WAF — Nginx Web Application Firewall
+
+High-availability Nginx reverse proxy with Naxsi WAF, Keepalived failover,
+and automatic configuration synchronization.
+
+Supports **Ubuntu 22.04** and **Ubuntu 24.04**.
+
+---
+
+## Quick Install (1 command)
+
+### Primary server
+
+```bash
+sudo bash install.sh \
+  --role primary \
+  --vip 192.168.18.70 \
+  --backend 192.168.18.61:80 \
+  --backend 192.168.18.62:80 \
+  --vrrp-password MySecretPass
+```
+
+### Backup server
+
+```bash
+sudo bash install.sh \
+  --role backup \
+  --vip 192.168.18.70 \
+  --backend 192.168.18.61:80 \
+  --backend 192.168.18.62:80 \
+  --peer-ip 192.168.18.71 \
+  --peer-user kien \
+  --vrrp-password MySecretPass
+```
+
+After backup install, copy SSH key to the primary:
+
+```bash
+ssh-copy-id kien@192.168.18.71
+```
+
+### All options
+
+```
+--role primary|backup     Server role (default: primary)
+--vip ADDRESS             Virtual IP for Keepalived
+--priority NUMBER         VRRP priority (default: 100 primary, 50 backup)
+--interface IFACE         Network interface (default: auto-detected)
+--server-ip ADDRESS       This server's real IP (default: auto-detected)
+--backend ADDR:PORT       Backend server (repeatable)
+--peer-ip ADDRESS         Primary server IP for config sync (backup only)
+--peer-user USER          SSH user on primary server
+--vrrp-password PASS      VRRP auth password (must match on both nodes)
+--naxsi-version VER       Naxsi version (default: 1.6)
+--skip-keepalived         Skip Keepalived installation
+--skip-sync               Skip config sync setup
+--uninstall               Remove Naxsi components (keeps Nginx)
+```
+
+---
+
+## What Gets Installed
+
+| Component    | Description                              |
+|-------------|------------------------------------------|
+| Nginx       | Reverse proxy with Naxsi WAF module      |
+| Naxsi       | WAF rules for SQL/XSS/RFI/traversal     |
+| Keepalived  | VRRP failover with health checks         |
+| Config Sync | Cron + rsync to sync config from primary |
+
+### File locations after install
+
+```
+/etc/nginx/nginx.conf                    Main Nginx config
+/etc/nginx/naxsi.rules                   WAF runtime rules (thresholds)
+/etc/nginx/naxsi_core.rules              WAF detection patterns
+/etc/nginx/modules/ngx_http_naxsi_module.so  Compiled module
+/etc/keepalived/keepalived.conf          HA configuration
+/etc/keepalived/check_nginx.sh           Nginx health check
+/var/www/html/block.html                 Block page
+/usr/local/bin/naxsi-config-sync.sh      Sync script (backup only)
+/var/log/naxsi-install.log               Install log
+/var/log/naxsi-sync.log                  Sync log (backup only)
+```
+
+---
+
+## Manual Install
+
+If you prefer to install step by step:
+
+### 1. Install dependencies
+
+```bash
 sudo apt update
-sudo apt-get install -y vim net-tools git cron rsync build-essential libmaxminddb-dev libpcre3-dev libssl-dev libpcre3 zlib1g zlib1g-dev
+sudo apt install -y build-essential libmaxminddb-dev libpcre3-dev \
+  libpcre3 libssl-dev zlib1g zlib1g-dev wget curl gnupg rsync cron git
+```
 
-###Basic
-sudo hostnamectl set-hostname Nginx02
+### 2. Install Nginx
 
-sudo vim /etc/netplan/00-installer-config.yaml ### Sua ip
-
-sudo netplan apply
-
-###Clone github file
-cd ~
-sudo git clone https://github.com/kiennt048/naxsi.git
-
-### Install nginx
+```bash
 sudo apt install -y nginx
 sudo systemctl enable nginx
-sudo systemctl status nginx
-sudo nginx -v
+```
 
+### 3. Build Naxsi module
 
-
-
-
-### Install Keep alive
-sudo apt-get install -y keepalived
-sudo systemctl enable keepalived
-
-sudo vim ~/naxsi/keepalived.conf ###modifi the router ID, priority, ip of real server and VIP
-
-sudo cp ~/naxsi/check_nginx.sh /etc/keepalived
-sudo cp ~/naxsi/keepalived.conf /etc/keepalived
-sudo systemctl restart keepalived
-sudo systemctl status keepalived
-
-### Install copy script 
-## backup server
-ssh-keygen ### enter enter enter ....
-ssh-copy-id kien@192.168.18.71  ###copy ssh key from backup to main server
-### Yess >> Enter user password of main server
-
-###Modifi IP and User of at configsync.sh
-sudo vim ~/naxsi/configsync.sh  ### Check backup script
-sudo chmod 777 ~/naxsi/configsync.sh
-
-### Create crontab
-sudo crontab -e 
-* * * * * sh /home/kien/naxsi/configsync.sh ###change path and add to end line
-sudo systemctl restart cron
-
-#run manual backup 1 time to add know host file (can disable it  "Bypassing SSH Server Verification by Configuration")
-sudo rsync -aizhe "ssh -i /home/kien/.ssh/id_rsa" kien@192.168.18.71:/etc/nginx/ /etc/nginx/
-
-
-### Manual Check backup script to working well or not.
-
-
-### Install Nginx UI
-wget https://raw.githubusercontent.com/0xJacky/nginx-ui/master/install.sh
-sudo bash install.sh install
-
-
-### Install WAF 
-cd ~
+```bash
 export NAXSI_VER=1.6
-wget https://github.com/wargio/naxsi/releases/download/$NAXSI_VER/naxsi-$NAXSI_VER-src-with-deps.tar.gz -O naxsi-$NAXSI_VER-src-with-deps.tar.gz
+export NGINX_VER=$(nginx -v 2>&1 | grep -oP '\d+\.\d+\.\d+')
 
-export NGINX_VER=1.18.0
+wget https://github.com/wargio/naxsi/releases/download/$NAXSI_VER/naxsi-$NAXSI_VER-src-with-deps.tar.gz
 wget https://nginx.org/download/nginx-$NGINX_VER.tar.gz
-wget https://nginx.org/download/nginx-$NGINX_VER.tar.gz.asc
-gpg --recv-key 520A9993A1C052F8
-gpg --verify nginx-$NGINX_VER.tar.gz.asc
 
-rm nginx-$NGINX_VER.tar.gz.asc 
 mkdir -p naxsi-$NAXSI_VER
 tar -C naxsi-$NAXSI_VER -xzf naxsi-$NAXSI_VER-src-with-deps.tar.gz
-tar vxf nginx-$NGINX_VER.tar.gz 
-cd nginx-$NGINX_VER  
-wget https://github.com/leev/ngx_http_geoip2_module/archive/refs/tags/3.3.tar.gz
-tar vxf 3.3.tar.gz
+tar -xzf nginx-$NGINX_VER.tar.gz
 
-./configure --with-cc-opt='-g -O2 -ffile-prefix-map=/build/nginx-zctdR4/nginx-1.18.0=. -flto=auto -ffat-lto-objects -flto=auto -ffat-lto-objects -fstack-protector-strong -Wformat -Werror=format-security -fPIC -Wdate-time -D_FORTIFY_SOURCE=2' --with-ld-opt='-Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -flto=auto -Wl,-z,relro -Wl,-z,now -fPIC' --prefix=/usr/share/nginx --conf-path=/etc/nginx/nginx.conf --http-log-path=/var/log/nginx/access.log --error-log-path=/var/log/nginx/error.log --lock-path=/var/lock/nginx.lock --pid-path=/run/nginx.pid --modules-path=/usr/lib/nginx/modules --http-client-body-temp-path=/var/lib/nginx/body --http-fastcgi-temp-path=/var/lib/nginx/fastcgi --http-proxy-temp-path=/var/lib/nginx/proxy --http-scgi-temp-path=/var/lib/nginx/scgi --http-uwsgi-temp-path=/var/lib/nginx/uwsgi --with-compat --with-debug --with-pcre-jit --with-http_ssl_module --with-http_stub_status_module --with-http_realip_module --with-http_auth_request_module --with-http_v2_module --with-http_dav_module --with-http_slice_module --with-threads --add-dynamic-module=/home/kien/nginx-1.18.0/ngx_http_geoip2_module-3.3 --with-http_addition_module --with-http_gunzip_module --with-http_gzip_static_module --with-http_sub_module --add-dynamic-module=../naxsi-$NAXSI_VER/naxsi_src/
-
+cd nginx-$NGINX_VER
+./configure --with-compat --add-dynamic-module=../naxsi-$NAXSI_VER/naxsi_src/
 make modules
 
-sudo mkdir /etc/nginx/modules
-sudo cp objs/ngx_http_naxsi_module.so /etc/nginx/modules/ngx_http_naxsi_module.so
+sudo mkdir -p /etc/nginx/modules
+sudo cp objs/ngx_http_naxsi_module.so /etc/nginx/modules/
+```
 
-sudo cp ~/naxsi/naxsi.rules /etc/nginx
-sudo cp ~/naxsi/naxsi_core.rules /etc/nginx
-sudo cp ~/naxsi/nginx.conf /etc/nginx
-sudo cp ~/naxsi/block.html /var/www/html/block.html
+### 4. Copy configuration files
 
-sudo systemctl restart nginx
+```bash
+sudo cp naxsi.rules naxsi_core.rules nginx.conf /etc/nginx/
+sudo cp block.html /var/www/html/
+sudo cp check_nginx.sh /etc/keepalived/
+sudo cp keepalived.conf /etc/keepalived/
+```
+
+Edit the config files to match your environment (IPs, interface, passwords).
+
+### 5. Install Keepalived
+
+```bash
+sudo apt install -y keepalived
+sudo systemctl enable keepalived
+sudo systemctl restart keepalived
+```
+
+### 6. Set up config sync (backup server only)
+
+```bash
+ssh-keygen
+ssh-copy-id user@primary-server-ip
+sudo crontab -e
+# Add: * * * * * /path/to/configsync.sh
+```
+
+### 7. Restart services
+
+```bash
+sudo nginx -t && sudo systemctl restart nginx
+sudo systemctl restart keepalived
+```
+
+---
+
+## Testing the WAF
+
+Test that Naxsi blocks malicious requests:
+
+```bash
+# Should be blocked (XSS)
+curl 'http://YOUR_VIP/?q=<script>alert(1)</script>'
+
+# Should be blocked (SQL injection)
+curl "http://YOUR_VIP/?id=1' OR '1'='1"
+
+# Should pass (normal request)
+curl 'http://YOUR_VIP/'
+```
+
+---
+
+## Tuning WAF Rules
+
+### Adjusting thresholds
+
+Edit `/etc/nginx/naxsi.rules` to change blocking thresholds:
+
+```
+CheckRule "$SQL >= 8" BLOCK;     # SQL injection score threshold
+CheckRule "$XSS >= 8" BLOCK;     # XSS score threshold
+CheckRule "$RFI >= 8" BLOCK;     # Remote file inclusion threshold
+CheckRule "$TRAVERSAL >= 5" BLOCK; # Directory traversal threshold
+CheckRule "$UPLOAD >= 5" BLOCK;  # File upload threshold
+```
+
+Lower values = stricter (more false positives). Higher values = more permissive.
+
+### Learning mode
+
+Uncomment `LearningMode;` in `naxsi.rules` to log but not block. Review
+`/var/log/nginx/error.log` for triggered rules, then create whitelists.
+
+---
+
+## Uninstall
+
+```bash
+sudo bash install.sh --uninstall
+```
+
+This removes Naxsi config and module. Nginx and Keepalived remain installed.

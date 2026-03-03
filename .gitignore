@@ -1,0 +1,25 @@
+# Compiled binaries
+*.so
+*.o
+
+# Editor files
+*.swp
+*.swo
+*~
+.*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# SSH keys
+*.pem
+id_rsa
+id_rsa.pub
+
+# Temp/build artifacts
+/tmp/
+/build/
