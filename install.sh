@@ -304,6 +304,10 @@ install_naxsi_config() {
     chmod 755 /usr/local/bin/naxsi-ai-agent
     mkdir -p /var/lib/naxsi-ai-agent/reports
 
+    # Install CI/CD rule generation tool
+    cp "${SCRIPT_DIR}/naxsi-ci.sh" /usr/local/bin/naxsi-ci
+    chmod 755 /usr/local/bin/naxsi-ci
+
     # Generate nginx.conf
     generate_nginx_conf
 
@@ -573,6 +577,7 @@ do_uninstall() {
     rm -f /usr/local/bin/naxsi-config-sync.sh
     rm -f /usr/local/bin/naxsi-manager
     rm -f /usr/local/bin/naxsi-ai-agent
+    rm -f /usr/local/bin/naxsi-ci
     rm -rf /etc/nginx/naxsi_backups
     rm -rf /var/lib/naxsi-ai-agent
 
@@ -671,6 +676,11 @@ print_summary() {
     echo "    sudo naxsi-ai-agent auto-whitelist   # Auto-apply safe rules"
     echo "    sudo naxsi-ai-agent investigate <ip> # Investigate a blocked IP"
     echo "    sudo naxsi-ai-agent request <ip>     # User access request"
+    echo ""
+    echo -e "  ${BLUE}CI/CD auto rule generation:${NC}"
+    echo "    sudo naxsi-ci auto --test-cmd 'npm test' --output rules.txt"
+    echo "    sudo naxsi-ci validate --rules rules.txt"
+    echo "    sudo naxsi-ci merge --rules rules.txt"
     echo ""
 }
 

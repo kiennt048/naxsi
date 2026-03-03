@@ -243,6 +243,93 @@ Run `sudo naxsi-ai-agent policy` to see all thresholds.
 
 ---
 
+## CI/CD — Auto Rule Generation
+
+When a developer deploys a new feature, `naxsi-ci` automatically generates
+the whitelist rules that feature needs — without compromising security.
+
+### The problem it solves
+
+Developer adds a new `/api/checkout` endpoint with form fields. NAXSI blocks
+legitimate requests because form data contains characters like `=`, `'`, `&`
+that match SQL/XSS rules. Without auto-generation, someone must manually
+create whitelist rules every time a feature ships.
+
+### One-shot mode (recommended)
+
+```bash
+# In your Jenkinsfile / .gitlab-ci.yml / GitHub Actions:
+sudo naxsi-ci auto --test-cmd "npm test" --output rules.txt --merge
+```
+
+This does everything: enable learning -> run your tests -> generate rules -> validate -> merge -> disable learning.
+
+### Step-by-step mode
+
+```bash
+# 1. Start learning (bookmarks log position)
+sudo naxsi-ci learn-start
+
+# 2. Run your app's test suite (functional tests, NOT security tests)
+npm test          # or pytest, go test, mvn test, etc.
+
+# 3. Generate rules from what the tests triggered
+sudo naxsi-ci generate --output rules.txt
+
+# 4. Stop learning
+sudo naxsi-ci learn-stop
+
+# 5. Preview what's new
+sudo naxsi-ci diff --rules rules.txt
+
+# 6. Validate and merge
+sudo naxsi-ci validate --rules rules.txt
+sudo naxsi-ci merge --rules rules.txt
+```
+
+### Pipeline examples
+
+**Jenkinsfile:**
+```groovy
+stage('WAF Rules') {
+    steps {
+        sh 'sudo naxsi-ci auto --test-cmd "npm test" --output rules.txt'
+        sh 'sudo naxsi-ci validate --rules rules.txt'
+        sh 'sudo naxsi-ci merge --rules rules.txt'
+    }
+}
+```
+
+**GitLab CI:**
+```yaml
+waf-rules:
+  stage: deploy
+  script:
+    - sudo naxsi-ci auto --test-cmd "pytest" --output rules.txt
+    - sudo naxsi-ci validate --rules rules.txt
+    - sudo naxsi-ci merge --rules rules.txt
+```
+
+**GitHub Actions:**
+```yaml
+- run: sudo naxsi-ci auto --test-cmd "go test ./..." --output rules.txt --merge
+```
+
+### Security enforcement
+
+The tool enforces security best practices automatically:
+
+| Protection | What happens |
+|------------|-------------|
+| Critical rules (libinjection, /etc/passwd) | **NEVER** whitelisted. Pipeline exits code 2 (FAIL) |
+| High-risk rules (hex encoding, file upload) | Commented out. Require `--force` flag |
+| Overly broad whitelists (no URI scope) | Warning during validation |
+| Too many rules (>200) | Generation fails — tests are too noisy |
+
+**Important:** Run `naxsi-ci` with your **functional tests** (login, checkout, search, etc.), NOT security/penetration tests. Security tests intentionally send attack payloads — those should trigger blocks, not generate whitelists.
+
+---
+
 ## Testing the WAF
 
 ```bash

@@ -24,6 +24,7 @@ naxsi/
 ├── install.sh                       # Automated installer for Ubuntu 22.04/24.04
 ├── naxsi-manager.sh                 # Interactive learning mode & whitelist manager
 ├── naxsi-ai-agent.sh                # AI security agent — autonomous log analysis & decisions
+├── naxsi-ci.sh                      # CI/CD auto rule generation (Jenkins/GitLab/GitHub Actions)
 ├── nginx.conf                       # Nginx configuration template
 ├── naxsi.rules                      # Naxsi WAF runtime rules (thresholds)
 ├── naxsi_core.rules                 # Core WAF detection rules (pattern matching)
@@ -139,6 +140,25 @@ On-demand security analysis tool (`sudo naxsi-ai-agent`) that acts as an autonom
 **State files:**
 - Agent log: `/var/log/naxsi-ai-agent.log`
 - Decision history: `/var/lib/naxsi-ai-agent/decisions.log`
+
+### naxsi-ci.sh — CI/CD Auto Rule Generation
+
+Non-interactive tool (`sudo naxsi-ci`) for automated whitelist rule generation in CI/CD pipelines:
+
+- **learn-start**: Enables learning mode and bookmarks log position (only new events are parsed)
+- **generate**: Parses learning events from the current test run, produces scoped whitelist rules
+- **validate**: Checks rules against security policy (blocks critical rules, warns on high-risk)
+- **merge**: Adds new rules to whitelist with deduplication and `nginx -t` validation
+- **diff**: Preview new rules vs existing whitelist
+- **auto**: One-shot mode — learn -> run tests -> generate -> stop learning
+
+**Security enforcement:**
+- Critical rules (17, 18, 1202, 1203, 1204) are NEVER whitelisted — pipeline exits with code 2
+- High-risk rules are commented out by default (require `--force`)
+- All generated rules are scoped to specific URIs/variables (not global)
+- If tests trigger >200 rules, generation fails (safety limit)
+
+**Key design: functional tests, not security tests.** The tool expects you to run your app's normal functional/integration test suite (which exercises real endpoints). Security/penetration tests should be in a separate pipeline — they would trigger critical rules and cause the pipeline to fail intentionally.
 
 ### WAF Rules
 
