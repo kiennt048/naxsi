@@ -103,8 +103,10 @@ Full-featured installer script with:
 Interactive CLI tool (`sudo naxsi-manager`) for:
 - Toggling learning mode on/off (modifies `naxsi.rules`, reloads Nginx)
 - Parsing Nginx error log to extract NAXSI_FMT learning events
-- Generating whitelist rules (`BasicRule wl:ID "mz:ZONE";`) from log data
-- Interactive rule-by-rule review: accept / reject / edit
+- **Hit count statistics**: shows how many times each rule was triggered and from how many unique IPs — helps distinguish legitimate traffic from attacks
+- **Log statistics** (`stats` command): top triggered rule IDs, top URIs, unique IP analysis — without generating rules
+- Generating whitelist rules (`BasicRule wl:ID "mz:ZONE";`) sorted by hit frequency
+- Interactive rule-by-rule review with hit counts: accept / reject / edit
 - Applying approved rules to `naxsi_whitelist.rules` and reloading Nginx
 - Removing individual whitelist rules
 - Automatic backups before any config change

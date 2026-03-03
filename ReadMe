@@ -116,14 +116,38 @@ sudo naxsi-manager              Interactive menu (recommended)
 sudo naxsi-manager status       Show current mode & statistics
 sudo naxsi-manager learn-on     Enable learning mode
 sudo naxsi-manager learn-off    Disable learning mode
-sudo naxsi-manager generate     Parse logs → generate whitelist rules
+sudo naxsi-manager generate     Parse logs → generate whitelist rules (with hit counts)
 sudo naxsi-manager review       Interactively review pending rules (y/n/edit)
 sudo naxsi-manager apply        Apply pending rules after review
 sudo naxsi-manager show         Show active whitelist rules
 sudo naxsi-manager show-pending Show pending rules awaiting review
 sudo naxsi-manager remove       Remove a specific whitelist rule
+sudo naxsi-manager stats        Show log statistics (top rules, URIs, IPs)
 sudo naxsi-manager clear-logs   Clear Naxsi events from error log
 ```
+
+### Statistics & hit counts
+
+When you run `generate` or `stats`, the manager analyzes the Nginx error log and shows:
+
+- **Hit counts** — how many times each rule was triggered (high = likely legitimate traffic)
+- **Unique IPs** — how many different clients triggered a rule (1 IP = possible attack, many = normal)
+- **Top rules** — which rule IDs fire most often
+- **Top URIs** — which pages trigger the most WAF events
+
+Rules are sorted by hit count (most triggered first). During `review`, hit counts
+are shown for each rule so you can make informed decisions:
+
+```
+--- Rule 1/5 ---
+  BasicRule wl:1013 "mz:$URL:/api/search|$ARGS_VAR:q";
+  Rule ID: 1013 (simple quote)
+  Match:   mz:$URL:/api/search|$ARGS_VAR:q
+  Hits:    847 events from 312 unique IPs
+```
+
+A rule with 847 hits from 312 IPs is almost certainly legitimate traffic that should
+be whitelisted. A rule with 3 hits from 1 IP is suspicious and should probably be rejected.
 
 ### Example: Tuning a new site
 

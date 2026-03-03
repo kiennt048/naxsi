@@ -246,6 +246,196 @@ cmd_learn_off() {
 }
 
 # ============================================================
+# Log parsing — shared by generate and stats
+# ============================================================
+
+# Globals populated by parse_learning_logs
+declare -A PARSED_RULE_HITS=()     # key -> hit count
+declare -A PARSED_RULE_IPS=()      # key -> "ip1 ip2 ..."
+declare -A PARSED_ID_TOTAL=()      # rule_id -> total hits
+declare -A PARSED_URI_TOTAL=()     # uri -> total hits
+PARSED_TOTAL_EVENTS=0
+PARSED_UNIQUE_IPS=0
+
+parse_learning_logs() {
+    PARSED_RULE_HITS=()
+    PARSED_RULE_IPS=()
+    PARSED_ID_TOTAL=()
+    PARSED_URI_TOTAL=()
+    PARSED_TOTAL_EVENTS=0
+
+    local -A all_ips=()
+
+    while IFS= read -r line; do
+        PARSED_TOTAL_EVENTS=$((PARSED_TOTAL_EVENTS + 1))
+
+        local uri="" ip=""
+        uri=$(echo "$line" | grep -oP 'uri=[^&,]+' | head -1 | cut -d= -f2)
+        ip=$(echo "$line" | grep -oP 'ip=[^&,]+' | head -1 | cut -d= -f2)
+
+        [[ -n "$ip" ]] && all_ips[$ip]=1
+        [[ -n "$uri" ]] && PARSED_URI_TOTAL[$uri]=$(( ${PARSED_URI_TOTAL[$uri]:-0} + 1 ))
+
+        local idx=0
+        while true; do
+            local zone id var_name
+            zone=$(echo "$line" | grep -oP "zone${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
+            id=$(echo "$line" | grep -oP "(?<=[^_])id${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
+            var_name=$(echo "$line" | grep -oP "var_name${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
+
+            [[ -z "$zone" || -z "$id" ]] && break
+
+            local key="${id}|${zone}|${uri}|${var_name}"
+            PARSED_RULE_HITS[$key]=$(( ${PARSED_RULE_HITS[$key]:-0} + 1 ))
+            PARSED_ID_TOTAL[$id]=$(( ${PARSED_ID_TOTAL[$id]:-0} + 1 ))
+
+            # Track unique IPs per rule
+            if [[ -n "$ip" ]]; then
+                local existing="${PARSED_RULE_IPS[$key]:-}"
+                if [[ ! " $existing " =~ " $ip " ]]; then
+                    PARSED_RULE_IPS[$key]="${existing} ${ip}"
+                fi
+            fi
+
+            idx=$((idx + 1))
+        done
+    done < <(grep 'NAXSI_FMT' "$ERROR_LOG")
+
+    PARSED_UNIQUE_IPS=${#all_ips[@]}
+}
+
+build_matchzone() {
+    local zone="$1" uri="$2" var_name="$3"
+
+    if [[ -n "$uri" && "$uri" != "/" && -n "$var_name" ]]; then
+        case "$zone" in
+            ARGS)           echo "\$URL:${uri}|\$ARGS_VAR:${var_name}" ;;
+            BODY)           echo "\$URL:${uri}|\$BODY_VAR:${var_name}" ;;
+            HEADERS)        echo "\$URL:${uri}|\$HEADERS_VAR:${var_name}" ;;
+            URL)            echo "\$URL:${uri}|URL" ;;
+            FILE_EXT)       echo "\$URL:${uri}|FILE_EXT" ;;
+            *)              echo "\$URL:${uri}|${zone}" ;;
+        esac
+    elif [[ -n "$uri" && "$uri" != "/" ]]; then
+        case "$zone" in
+            ARGS)           echo "\$URL:${uri}|ARGS" ;;
+            BODY)           echo "\$URL:${uri}|BODY" ;;
+            URL)            echo "\$URL:${uri}|URL" ;;
+            HEADERS)        echo "\$URL:${uri}|\$HEADERS_VAR:Cookie" ;;
+            FILE_EXT)       echo "\$URL:${uri}|FILE_EXT" ;;
+            *)              echo "\$URL:${uri}|${zone}" ;;
+        esac
+    elif [[ -n "$var_name" ]]; then
+        case "$zone" in
+            ARGS)           echo "\$ARGS_VAR:${var_name}" ;;
+            BODY)           echo "\$BODY_VAR:${var_name}" ;;
+            HEADERS)        echo "\$HEADERS_VAR:${var_name}" ;;
+            *)              echo "${zone}" ;;
+        esac
+    else
+        echo "${zone}"
+    fi
+}
+
+# ============================================================
+# Stats — show log analysis without generating rules
+# ============================================================
+cmd_stats() {
+    echo ""
+    echo -e "${BOLD}=== Naxsi Learning Log Statistics ===${NC}"
+    echo ""
+
+    if [[ ! -f "$ERROR_LOG" ]]; then
+        echo -e "${RED}Error log not found: ${ERROR_LOG}${NC}"
+        return 1
+    fi
+
+    local raw_count
+    raw_count=$(grep -c 'NAXSI_FMT' "$ERROR_LOG" 2>/dev/null || true)
+    if [[ "$raw_count" -eq 0 ]]; then
+        echo -e "${YELLOW}No Naxsi learning events found in ${ERROR_LOG}.${NC}"
+        return
+    fi
+
+    echo -e "Parsing ${BLUE}${raw_count}${NC} log entries..."
+    echo ""
+    parse_learning_logs
+
+    # --- Summary ---
+    echo -e "${BOLD}  Summary${NC}"
+    echo -e "  Total log events:   ${BLUE}${PARSED_TOTAL_EVENTS}${NC}"
+    echo -e "  Unique client IPs:  ${BLUE}${PARSED_UNIQUE_IPS}${NC}"
+    echo -e "  Unique rule combos: ${BLUE}${#PARSED_RULE_HITS[@]}${NC}"
+    echo -e "  Unique rule IDs:    ${BLUE}${#PARSED_ID_TOTAL[@]}${NC}"
+    echo -e "  Unique URIs:        ${BLUE}${#PARSED_URI_TOTAL[@]}${NC}"
+    echo ""
+
+    # --- Top triggered rule IDs ---
+    echo -e "${BOLD}  Top Rule IDs by Hit Count${NC}"
+    echo -e "  ${DIM}  Hits  ID      Description${NC}"
+
+    # Sort rule IDs by hit count descending
+    local sorted_ids
+    sorted_ids=$(for id in "${!PARSED_ID_TOTAL[@]}"; do
+        echo "${PARSED_ID_TOTAL[$id]} $id"
+    done | sort -rn)
+
+    local shown=0
+    while IFS=' ' read -r hits id; do
+        [[ -z "$id" ]] && continue
+        local desc
+        desc=$(get_rule_description "$id")
+        printf "  %s%6d%s  %-6s  %s\n" "$BLUE" "$hits" "$NC" "$id" "$desc"
+        shown=$((shown + 1))
+        [[ $shown -ge 15 ]] && break
+    done <<< "$sorted_ids"
+    echo ""
+
+    # --- Top triggered URIs ---
+    echo -e "${BOLD}  Top URIs by Hit Count${NC}"
+    echo -e "  ${DIM}  Hits  URI${NC}"
+
+    local sorted_uris
+    sorted_uris=$(for uri in "${!PARSED_URI_TOTAL[@]}"; do
+        echo "${PARSED_URI_TOTAL[$uri]} $uri"
+    done | sort -rn)
+
+    shown=0
+    while IFS=' ' read -r hits uri; do
+        [[ -z "$uri" ]] && continue
+        printf "  %s%6d%s  %s\n" "$BLUE" "$hits" "$NC" "$uri"
+        shown=$((shown + 1))
+        [[ $shown -ge 10 ]] && break
+    done <<< "$sorted_uris"
+    echo ""
+
+    # --- Detailed rule combos ---
+    echo -e "${BOLD}  All Rule Combinations (sorted by hits)${NC}"
+    echo -e "  ${DIM}  Hits  IPs  ID      Zone      URI                  Var${NC}"
+
+    local sorted_rules
+    sorted_rules=$(for key in "${!PARSED_RULE_HITS[@]}"; do
+        echo "${PARSED_RULE_HITS[$key]} $key"
+    done | sort -rn)
+
+    while IFS=' ' read -r hits key; do
+        [[ -z "$key" ]] && continue
+        IFS='|' read -r id zone uri var_name <<< "$key"
+        # Count unique IPs for this rule
+        local ip_list="${PARSED_RULE_IPS[$key]:-}"
+        local ip_count=0
+        if [[ -n "$ip_list" ]]; then
+            ip_count=$(echo "$ip_list" | tr ' ' '\n' | grep -c . || true)
+        fi
+        printf "  %s%6d%s  %s%-3d%s  %-6s  %-8s  %-20s %s\n" \
+            "$BLUE" "$hits" "$NC" \
+            "$CYAN" "$ip_count" "$NC" \
+            "$id" "$zone" "${uri:--}" "${var_name:--}"
+    done <<< "$sorted_rules"
+    echo ""
+}
+
+# ============================================================
 # Parse logs and generate whitelist rules
 # ============================================================
 cmd_generate() {
@@ -258,126 +448,86 @@ cmd_generate() {
         return 1
     fi
 
-    local event_count
-    event_count=$(grep -c 'NAXSI_FMT' "$ERROR_LOG" 2>/dev/null || true)
+    local raw_count
+    raw_count=$(grep -c 'NAXSI_FMT' "$ERROR_LOG" 2>/dev/null || true)
 
-    if [[ "$event_count" -eq 0 ]]; then
+    if [[ "$raw_count" -eq 0 ]]; then
         echo -e "${YELLOW}No Naxsi learning events found in ${ERROR_LOG}.${NC}"
         echo "Make sure learning mode is enabled and send some traffic."
         return
     fi
 
-    echo -e "Found ${BLUE}${event_count}${NC} learning events. Parsing..."
+    echo -e "Found ${BLUE}${raw_count}${NC} learning events. Parsing..."
     echo ""
+    parse_learning_logs
 
-    # Parse NAXSI_FMT lines and extract unique (id, zone, uri, var_name) tuples
-    # NAXSI_FMT: ip=...&server=...&uri=/path&learning=1&...&zone0=ARGS&id0=1001&var_name0=q
-    declare -A seen_rules
-    local rules_generated=0
-
-    while IFS= read -r line; do
-        # Extract fields from NAXSI_FMT line
-        local uri="" zones="" ids="" var_names=""
-
-        # Get URI
-        uri=$(echo "$line" | grep -oP 'uri=[^&,]+' | head -1 | cut -d= -f2)
-
-        # Extract all zone/id/var_name groups (zone0, id0, var_name0, zone1, id1, ...)
-        local idx=0
-        while true; do
-            local zone id var_name
-            zone=$(echo "$line" | grep -oP "zone${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
-            id=$(echo "$line" | grep -oP "(?<=[^_])id${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
-            var_name=$(echo "$line" | grep -oP "var_name${idx}=[^&,]+" | head -1 | cut -d= -f2 || true)
-
-            [[ -z "$zone" || -z "$id" ]] && break
-
-            # Build a unique key
-            local key="${id}|${zone}|${uri}|${var_name}"
-
-            if [[ -z "${seen_rules[$key]+_}" ]]; then
-                seen_rules[$key]=1
-            fi
-
-            idx=$((idx + 1))
-        done
-    done < <(grep 'NAXSI_FMT' "$ERROR_LOG")
-
-    if [[ ${#seen_rules[@]} -eq 0 ]]; then
+    if [[ ${#PARSED_RULE_HITS[@]} -eq 0 ]]; then
         echo -e "${YELLOW}Could not parse any rules from log events.${NC}"
         return
     fi
 
-    # Generate whitelist rules from unique tuples
+    # Show quick stats summary
+    echo -e "  ${DIM}Events: ${PARSED_TOTAL_EVENTS}  |  Unique IPs: ${PARSED_UNIQUE_IPS}  |  Rule combos: ${#PARSED_RULE_HITS[@]}${NC}"
+    echo ""
+
+    # Sort keys by hit count descending
+    local sorted_keys
+    sorted_keys=$(for key in "${!PARSED_RULE_HITS[@]}"; do
+        echo "${PARSED_RULE_HITS[$key]} $key"
+    done | sort -rn)
+
+    # Generate whitelist rules
     : > "$PENDING_FILE"
     echo "# Naxsi whitelist rules — generated $(date '+%Y-%m-%d %H:%M:%S')" >> "$PENDING_FILE"
+    echo "# Events parsed: ${PARSED_TOTAL_EVENTS} | Unique IPs: ${PARSED_UNIQUE_IPS}" >> "$PENDING_FILE"
     echo "# Review each rule, then run: sudo naxsi-manager apply" >> "$PENDING_FILE"
     echo "#" >> "$PENDING_FILE"
 
-    for key in "${!seen_rules[@]}"; do
+    local rules_generated=0
+
+    while IFS=' ' read -r hits key; do
+        [[ -z "$key" ]] && continue
         IFS='|' read -r id zone uri var_name <<< "$key"
 
-        local mz=""
-        local comment=""
         local desc
         desc=$(get_rule_description "$id")
+        local mz
+        mz=$(build_matchzone "$zone" "$uri" "$var_name")
 
-        # Build match zone string
-        # Naxsi zones: ARGS, BODY, URL, HEADERS, FILE_EXT
-        # Whitelist mz format: $URL:/path|$ARGS_VAR:name or $URL:/path|ARGS etc.
-        if [[ -n "$uri" && "$uri" != "/" && -n "$var_name" ]]; then
-            # Specific URI + specific variable
-            case "$zone" in
-                ARGS)           mz="\$URL:${uri}|\$ARGS_VAR:${var_name}" ;;
-                BODY)           mz="\$URL:${uri}|\$BODY_VAR:${var_name}" ;;
-                HEADERS)        mz="\$URL:${uri}|\$HEADERS_VAR:${var_name}" ;;
-                URL)            mz="\$URL:${uri}|URL" ;;
-                FILE_EXT)       mz="\$URL:${uri}|FILE_EXT" ;;
-                *)              mz="\$URL:${uri}|${zone}" ;;
-            esac
-        elif [[ -n "$uri" && "$uri" != "/" ]]; then
-            # Specific URI, no variable name
-            case "$zone" in
-                ARGS)           mz="\$URL:${uri}|ARGS" ;;
-                BODY)           mz="\$URL:${uri}|BODY" ;;
-                URL)            mz="\$URL:${uri}|URL" ;;
-                HEADERS)        mz="\$URL:${uri}|\$HEADERS_VAR:Cookie" ;;
-                FILE_EXT)       mz="\$URL:${uri}|FILE_EXT" ;;
-                *)              mz="\$URL:${uri}|${zone}" ;;
-            esac
-        elif [[ -n "$var_name" ]]; then
-            # No specific URI, but has variable
-            case "$zone" in
-                ARGS)           mz="\$ARGS_VAR:${var_name}" ;;
-                BODY)           mz="\$BODY_VAR:${var_name}" ;;
-                HEADERS)        mz="\$HEADERS_VAR:${var_name}" ;;
-                *)              mz="${zone}" ;;
-            esac
-        else
-            # Generic zone whitelist
-            mz="${zone}"
+        # Count unique IPs for this rule
+        local ip_list="${PARSED_RULE_IPS[$key]:-}"
+        local ip_count=0
+        if [[ -n "$ip_list" ]]; then
+            ip_count=$(echo "$ip_list" | tr ' ' '\n' | grep -c . || true)
         fi
 
-        comment="# wl rule ${id} (${desc}) on ${zone}"
-        [[ -n "$uri" && "$uri" != "/" ]] && comment+=" for ${uri}"
-        [[ -n "$var_name" ]] && comment+=" var=${var_name}"
+        local comment="# wl rule ${id} (${desc}) — hits:${hits} ips:${ip_count}"
+        [[ -n "$zone" ]] && comment+=" zone:${zone}"
+        [[ -n "$uri" && "$uri" != "/" ]] && comment+=" uri:${uri}"
+        [[ -n "$var_name" ]] && comment+=" var:${var_name}"
 
         echo "${comment}" >> "$PENDING_FILE"
         echo "BasicRule wl:${id} \"mz:${mz}\";" >> "$PENDING_FILE"
         echo "" >> "$PENDING_FILE"
 
         rules_generated=$((rules_generated + 1))
-    done
+
+        # Print to terminal too
+        printf "  %s%6d hits%s  %s%-3d ips%s  wl:%s  mz:%s  %s(%s)%s\n" \
+            "$BLUE" "$hits" "$NC" \
+            "$CYAN" "$ip_count" "$NC" \
+            "$id" "$mz" "$DIM" "$desc" "$NC"
+    done <<< "$sorted_keys"
 
     chmod 644 "$PENDING_FILE"
 
-    echo -e "${GREEN}Generated ${BLUE}${rules_generated}${GREEN} whitelist rules.${NC}"
+    echo ""
+    echo -e "${GREEN}Generated ${BLUE}${rules_generated}${GREEN} whitelist rules (sorted by hit count).${NC}"
     echo -e "Saved to: ${CYAN}${PENDING_FILE}${NC}"
     echo ""
     echo -e "Next steps:"
-    echo -e "  1. Review:  ${CYAN}sudo naxsi-manager show-pending${NC}"
-    echo -e "  2. Edit:    ${CYAN}sudo nano ${PENDING_FILE}${NC}"
-    echo -e "     Delete any lines you don't want to whitelist."
+    echo -e "  1. Review:  ${CYAN}sudo naxsi-manager review${NC}  (interactive accept/reject)"
+    echo -e "  2. Or edit: ${CYAN}sudo nano ${PENDING_FILE}${NC}"
     echo -e "  3. Apply:   ${CYAN}sudo naxsi-manager apply${NC}"
     echo ""
 }
@@ -432,26 +582,36 @@ cmd_show_pending() {
     fi
 
     local num=0
+    local prev_comment=""
     while IFS= read -r line; do
-        if [[ "$line" =~ ^[[:space:]]*# ]]; then
+        if [[ "$line" =~ ^[[:space:]]*#.*hits: ]]; then
+            prev_comment="$line"
+        elif [[ "$line" =~ ^[[:space:]]*# ]]; then
             echo -e "  ${DIM}${line}${NC}"
         elif [[ "$line" =~ ^[[:space:]]*BasicRule ]]; then
             num=$((num + 1))
-            local wl_id
+            local wl_id hits_info=""
             wl_id=$(echo "$line" | grep -oP 'wl:\K\d+' || true)
+            if [[ -n "$prev_comment" ]]; then
+                hits_info=$(echo "$prev_comment" | grep -oP 'hits:\K\d+' || true)
+            fi
             local desc=""
             if [[ -n "$wl_id" ]]; then
                 desc=$(get_rule_description "$wl_id")
             fi
-            echo -e "  ${YELLOW}[${num}]${NC} ${line}  ${DIM}# ${desc}${NC}"
+            local hits_label=""
+            [[ -n "$hits_info" ]] && hits_label=" ${BLUE}(${hits_info} hits)${NC}"
+            echo -e "  ${YELLOW}[${num}]${NC} ${line}  ${DIM}# ${desc}${NC}${hits_label}"
+            prev_comment=""
         fi
     done < "$PENDING_FILE"
 
     echo ""
     echo -e "  Total: ${YELLOW}${num}${NC} pending rules"
     echo ""
-    echo -e "  To edit:  ${CYAN}sudo nano ${PENDING_FILE}${NC}"
-    echo -e "  To apply: ${CYAN}sudo naxsi-manager apply${NC}"
+    echo -e "  To review: ${CYAN}sudo naxsi-manager review${NC}"
+    echo -e "  To edit:   ${CYAN}sudo nano ${PENDING_FILE}${NC}"
+    echo -e "  To apply:  ${CYAN}sudo naxsi-manager apply${NC}"
     echo ""
 }
 
@@ -509,11 +669,20 @@ cmd_review() {
             desc=$(get_rule_description "$wl_id")
         fi
 
+        # Extract hit count and IP count from comment if present
+        local hits_info="" ips_info=""
+        if [[ -n "$comment" ]]; then
+            hits_info=$(echo "$comment" | grep -oP 'hits:\K\d+' || true)
+            ips_info=$(echo "$comment" | grep -oP 'ips:\K\d+' || true)
+        fi
+
         echo -e "${BOLD}--- Rule ${num}/${total} ---${NC}"
-        [[ -n "$comment" ]] && echo -e "  ${DIM}${comment}${NC}"
         echo -e "  ${CYAN}${rule}${NC}"
         echo -e "  Rule ID: ${BLUE}${wl_id}${NC} (${desc})"
         echo -e "  Match:   ${mz}"
+        if [[ -n "$hits_info" ]]; then
+            echo -e "  Hits:    ${BLUE}${hits_info}${NC} events from ${CYAN}${ips_info:-?}${NC} unique IPs"
+        fi
         echo ""
 
         while true; do
@@ -754,19 +923,20 @@ interactive_menu() {
 
         echo -e "  Whitelist: ${BLUE}${wl_count}${NC} rules  |  Pending: ${YELLOW}${pending_count}${NC}  |  Log events: ${BLUE}${event_count}${NC}"
         echo ""
-        echo -e "  ${GREEN}1${NC}) Enable learning mode"
-        echo -e "  ${GREEN}2${NC}) Disable learning mode"
-        echo -e "  ${GREEN}3${NC}) Generate whitelist from logs"
-        echo -e "  ${GREEN}4${NC}) Review pending rules (interactive)"
-        echo -e "  ${GREEN}5${NC}) Apply pending rules"
-        echo -e "  ${GREEN}6${NC}) Show active whitelist"
-        echo -e "  ${GREEN}7${NC}) Show pending rules"
-        echo -e "  ${GREEN}8${NC}) Remove a whitelist rule"
-        echo -e "  ${GREEN}9${NC}) Clear learning log data"
-        echo -e "  ${GREEN}0${NC}) Show full status"
-        echo -e "  ${DIM}q${NC}) Quit"
+        echo -e "  ${GREEN} 1${NC}) Enable learning mode"
+        echo -e "  ${GREEN} 2${NC}) Disable learning mode"
+        echo -e "  ${GREEN} 3${NC}) Generate whitelist from logs"
+        echo -e "  ${GREEN} 4${NC}) Review pending rules (interactive)"
+        echo -e "  ${GREEN} 5${NC}) Apply pending rules"
+        echo -e "  ${GREEN} 6${NC}) Show active whitelist"
+        echo -e "  ${GREEN} 7${NC}) Show pending rules"
+        echo -e "  ${GREEN} 8${NC}) Remove a whitelist rule"
+        echo -e "  ${GREEN} 9${NC}) Show log statistics (top rules, URIs, IPs)"
+        echo -e "  ${GREEN}10${NC}) Clear learning log data"
+        echo -e "  ${GREEN} 0${NC}) Show full status"
+        echo -e "  ${DIM} q${NC}) Quit"
         echo ""
-        echo -ne "  Choose [0-9/q]: "
+        echo -ne "  Choose [0-10/q]: "
         read -r choice
 
         case "$choice" in
@@ -778,7 +948,8 @@ interactive_menu() {
             6) cmd_show ;;
             7) cmd_show_pending ;;
             8) cmd_remove ;;
-            9) cmd_clear_logs ;;
+            9) cmd_stats ;;
+            10) cmd_clear_logs ;;
             0) cmd_status ;;
             q|Q) echo -e "${DIM}Bye.${NC}"; exit 0 ;;
             *) echo -e "${RED}Invalid choice.${NC}" ;;
@@ -805,6 +976,7 @@ main() {
         show)           cmd_show ;;
         show-pending)   cmd_show_pending ;;
         remove)         cmd_remove ;;
+        stats)          cmd_stats ;;
         clear-logs)     cmd_clear_logs ;;
         help|--help|-h)
             echo "Usage: sudo naxsi-manager [command]"
@@ -820,6 +992,7 @@ main() {
             echo "  show          Show active whitelist rules"
             echo "  show-pending  Show pending rules awaiting review"
             echo "  remove        Remove a whitelist rule"
+            echo "  stats         Show log statistics (top rules, URIs, IPs)"
             echo "  clear-logs    Clear Naxsi events from error log"
             echo "  help          Show this help"
             ;;
