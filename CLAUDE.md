@@ -7,7 +7,9 @@ This is a **Naxsi WAF (Web Application Firewall) deployment and configuration re
 **Supported platforms:** Ubuntu 22.04 (Jammy), Ubuntu 24.04 (Noble)
 
 **Key components:**
-- Naxsi WAF module (v1.6) for Nginx
+- Naxsi WAF module (v1.7) for Nginx
+- Extended blocking rules (scanners, web security, PHP, SQL, WordPress)
+- Interactive learning mode & whitelist manager (`naxsi-manager.sh`)
 - Keepalived VRRP for high availability / failover
 - Rsync-based configuration synchronization via cron
 - LibInjection integration for SQL injection and XSS detection
@@ -17,18 +19,24 @@ This is a **Naxsi WAF (Web Application Firewall) deployment and configuration re
 
 ```
 naxsi/
-├── CLAUDE.md              # This file — AI assistant guide
-├── ReadMe                 # Installation and setup instructions
-├── install.sh             # Automated installer for Ubuntu 22.04/24.04
-├── nginx.conf             # Nginx configuration template with Naxsi + security hardening
-├── naxsi.rules            # Naxsi WAF runtime rules (thresholds, actions)
-├── naxsi_core.rules       # Core WAF detection rules (pattern matching)
-├── keepalived.conf        # Keepalived VRRP high-availability configuration template
-├── confignginx.txt        # Nginx ./configure flags reference (for manual builds)
-├── configsync.sh          # Bash script — syncs config from primary server via rsync
-├── check_nginx.sh         # Bash script — Nginx health check for Keepalived
-├── block.html             # HTML page displayed when a request is blocked
-└── .gitignore             # Excludes binaries, logs, editor files, SSH keys
+├── CLAUDE.md                        # This file — AI assistant guide
+├── ReadMe                           # Installation and setup instructions
+├── install.sh                       # Automated installer for Ubuntu 22.04/24.04
+├── naxsi-manager.sh                 # Interactive learning mode & whitelist manager
+├── nginx.conf                       # Nginx configuration template
+├── naxsi.rules                      # Naxsi WAF runtime rules (thresholds)
+├── naxsi_core.rules                 # Core WAF detection rules (pattern matching)
+├── naxsi_blocking_scanner.rules     # Scanner/bot blocking rules (from upstream 1.7)
+├── naxsi_blocking_web.rules         # Web security rules — CVEs, probes (from upstream 1.7)
+├── naxsi_blocking_wordpress.rules   # WordPress-specific rules (from upstream 1.7)
+├── naxsi_blocking_php.rules         # PHP security rules (from upstream 1.7)
+├── naxsi_blocking_sql.rules         # Advanced SQL injection rules (from upstream 1.7)
+├── keepalived.conf                  # Keepalived VRRP HA configuration template
+├── confignginx.txt                  # Nginx ./configure flags reference
+├── configsync.sh                    # Bash script — syncs config from primary via rsync
+├── check_nginx.sh                   # Bash script — Nginx health check for Keepalived
+├── block.html                       # HTML page displayed when a request is blocked
+└── .gitignore                       # Excludes binaries, logs, editor files, SSH keys
 ```
 
 All files are at the root level — there are no subdirectories.
@@ -42,9 +50,12 @@ cd naxsi
 sudo bash install.sh --role primary --vip 192.168.18.70 \
   --backend 10.0.0.2:80 --backend 10.0.0.3:80 \
   --vrrp-password MySecretPass
+
+# Then tune with the interactive manager
+sudo naxsi-manager
 ```
 
-The installer handles: dependency installation, Nginx setup, Naxsi module compilation, configuration deployment, Keepalived setup, and config sync (for backup nodes).
+The installer handles: dependency installation, Nginx setup, Naxsi 1.7 module compilation, blocking rules deployment, configuration deployment, Keepalived setup, naxsi-manager install, and config sync (for backup nodes).
 
 Run `bash install.sh --help` for all options.
 
@@ -78,12 +89,25 @@ Run `bash install.sh --help` for all options.
 Full-featured installer script with:
 - Ubuntu version detection and validation (22.04, 24.04 only)
 - Auto-detection of network interface and server IP
-- Naxsi module compilation from source (matches installed Nginx version)
+- Naxsi 1.7 module compilation from source (matches installed Nginx version)
+- Blocking rules deployment (scanner, web security, PHP, SQL, WordPress)
 - Dynamic `nginx.conf` generation with security hardening
+- naxsi-manager installation for learning mode & whitelist management
 - Keepalived configuration with generated or user-supplied VRRP password
 - Config sync setup with SSH key generation (backup nodes)
 - `--uninstall` flag for clean removal
 - Colored output and logging to `/var/log/naxsi-install.log`
+
+### naxsi-manager.sh — Learning Mode & Whitelist Manager
+
+Interactive CLI tool (`sudo naxsi-manager`) for:
+- Toggling learning mode on/off (modifies `naxsi.rules`, reloads Nginx)
+- Parsing Nginx error log to extract NAXSI_FMT learning events
+- Generating whitelist rules (`BasicRule wl:ID "mz:ZONE";`) from log data
+- Interactive rule-by-rule review: accept / reject / edit
+- Applying approved rules to `naxsi_whitelist.rules` and reloading Nginx
+- Removing individual whitelist rules
+- Automatic backups before any config change
 
 ### WAF Rules
 
@@ -99,7 +123,17 @@ Full-featured installer script with:
 | 1400–1500   | Evasion Tricks      | `$EVADE`       |
 | 1500–1600   | File Uploads        | `$UPLOAD`      |
 
-Rule format: `MainRule "pattern" "msg:description" "mz:match_zones" "s:$SCORE:value" id:number;`
+**Blocking rules** (from Naxsi 1.7 upstream):
+
+| File                                | ID Range        | Category              |
+|-------------------------------------|-----------------|-----------------------|
+| `naxsi_blocking_scanner.rules`      | 10000000+       | Scanners, bots, tools |
+| `naxsi_blocking_web.rules`          | 20000000+       | CVEs, exposed services|
+| `naxsi_blocking_wordpress.rules`    | 30000000+       | WordPress attacks     |
+| `naxsi_blocking_php.rules`          | 40000000+       | PHP security          |
+| `naxsi_blocking_sql.rules`          | 50000000+       | Advanced SQL injection|
+
+Blocking rules use `$UWA` (Unwanted Access) score variable.
 
 **`naxsi.rules`** — Runtime configuration with blocking thresholds:
 - `$SQL >= 8` → BLOCK
@@ -107,13 +141,19 @@ Rule format: `MainRule "pattern" "msg:description" "mz:match_zones" "s:$SCORE:va
 - `$TRAVERSAL >= 5` → BLOCK
 - `$UPLOAD >= 5` → BLOCK
 - `$XSS >= 8` → BLOCK
+- `$UWA >= 8` → BLOCK
+- `$EVADE >= 4` → BLOCK
 
 LibInjection is enabled for both SQL and XSS detection. Learning mode is available but disabled by default.
+
+**`naxsi_whitelist.rules`** — User-managed whitelist (created empty, populated via naxsi-manager).
 
 ### Nginx Configuration
 
 **`nginx.conf`** — Hardened template with:
 - Naxsi dynamic module loading
+- Core rules + blocking rules included at `http` level
+- Runtime rules + whitelist included at `location` level
 - `server_tokens off` (hides Nginx version)
 - Security headers: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`
 - TLS 1.2/1.3 only with strong cipher suite
@@ -142,7 +182,7 @@ LibInjection is enabled for both SQL and XSS detection. Learning mode is availab
 
 The `install.sh` script handles compilation automatically. For manual builds:
 
-1. Download Naxsi source and Nginx source (must match installed version)
+1. Download Naxsi 1.7 source and Nginx source (must match installed version)
 2. `./configure --with-compat --add-dynamic-module=../naxsi-$NAXSI_VER/naxsi_src/`
 3. `make modules`
 4. Copy `ngx_http_naxsi_module.so` to `/etc/nginx/modules/`
@@ -155,6 +195,7 @@ The `install.sh` script handles compilation automatically. For manual builds:
 1. Clone this repository
 2. Run `sudo bash install.sh` with appropriate flags
 3. For backup nodes: copy SSH key to primary server
+4. Run `sudo naxsi-manager` to tune whitelists via learning mode
 
 ### Manual
 1. Clone this repository
@@ -163,6 +204,7 @@ The `install.sh` script handles compilation automatically. For manual builds:
 4. Set up SSH key authentication between backup and primary servers
 5. Configure crontab to run `configsync.sh` every minute
 6. Start/restart Nginx and Keepalived services
+7. Use `sudo naxsi-manager` for learning mode and whitelist management
 
 ## Coding Conventions
 
@@ -184,14 +226,16 @@ The `install.sh` script handles compilation automatically. For manual builds:
 ### WAF Rules (Naxsi DSL)
 - One rule per line
 - Format: `MainRule "pattern" "msg:description" "mz:zones" "s:$SCORE:value" id:number;`
-- IDs are assigned in 100-block ranges by category
+- Core rules: IDs in 100-block ranges by category
+- Blocking rules: IDs in 10000000-block ranges by category
 - Patterns use either `str:` (string match) or `rx:` (regex match)
-- Match zones: `BODY`, `URL`, `ARGS`, `$HEADERS_VAR:Cookie`, `FILE_EXT`
+- Match zones: `BODY`, `URL`, `ARGS`, `$HEADERS_VAR:Cookie`, `FILE_EXT`, `ANY`
+- Whitelist format: `BasicRule wl:ID "mz:ZONE";`
 
 ### File Permissions
 - Config files: `644` (owner read/write, group/other read)
 - Sensitive config (keepalived): `640`
-- Scripts: `755` (health checks) or `750` (sync scripts)
+- Scripts: `755` (health checks, manager) or `750` (sync scripts)
 - Never use `777`
 
 ## Important Notes for AI Assistants
@@ -200,7 +244,9 @@ The `install.sh` script handles compilation automatically. For manual builds:
 2. **Environment-specific values.** Config files contain example IPs (192.168.18.x). The install script parameterizes these, but the template files in the repo use example values.
 3. **Rule ID uniqueness.** When adding new WAF rules, use the next available ID within the appropriate category range. Never reuse an existing ID.
 4. **Score thresholds matter.** Changing score values or thresholds in `naxsi.rules` directly impacts what gets blocked. Lower thresholds = more aggressive blocking (more false positives). Higher thresholds = more permissive (potential bypasses).
-5. **Learning mode.** Uncomment `LearningMode;` in `naxsi.rules` to switch Naxsi to learning mode (log but don't block). Useful for tuning rules on production traffic.
+5. **Learning mode.** Use `sudo naxsi-manager learn-on` or uncomment `LearningMode;` in `naxsi.rules` to switch Naxsi to learning mode (log but don't block). Use `naxsi-manager generate` to create whitelist rules from logs.
 6. **install.sh is the source of truth** for deployment logic. If deployment steps change, update `install.sh` — the ReadMe references it.
-7. **Binary files excluded.** The `.gitignore` excludes `*.so` files. The install script compiles the module from source, so pre-built binaries are no longer needed in the repo.
+7. **Binary files excluded.** The `.gitignore` excludes `*.so` files. The install script compiles the module from source.
 8. **Security-sensitive defaults.** Keepalived password is set to `CHANGEME` in the template. The install script generates a random password if none is provided. Never commit real passwords.
+9. **Blocking rules from upstream.** The `naxsi_blocking_*.rules` files come directly from Naxsi 1.7 upstream repository. WordPress blocking rules are disabled by default in `nginx.conf`.
+10. **naxsi-manager modifies live config.** The manager edits `naxsi.rules` and `naxsi_whitelist.rules` in `/etc/nginx/`. It creates backups in `/etc/nginx/naxsi_backups/` before each change.

@@ -16,7 +16,7 @@
 #   --peer-ip ADDRESS         Peer server IP for config sync (required for backup role)
 #   --peer-user USER          SSH user on peer server (default: current user)
 #   --vrrp-password PASS      VRRP auth password (default: randomly generated)
-#   --naxsi-version VER       Naxsi version to install (default: 1.6)
+#   --naxsi-version VER       Naxsi version to install (default: 1.7)
 #   --skip-keepalived         Skip Keepalived installation
 #   --skip-sync               Skip config sync setup
 #   --uninstall               Remove Naxsi module and config (keeps Nginx)
@@ -30,7 +30,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly LOG_FILE="/var/log/naxsi-install.log"
 readonly REQUIRED_UBUNTU_VERSIONS=("22.04" "24.04")
-readonly DEFAULT_NAXSI_VERSION="1.6"
+readonly DEFAULT_NAXSI_VERSION="1.7"
 
 # ============================================================
 # Color output
@@ -273,18 +273,37 @@ install_naxsi_config() {
     cp "${SCRIPT_DIR}/naxsi_core.rules" /etc/nginx/naxsi_core.rules
     chmod 644 /etc/nginx/naxsi_core.rules
 
+    # Blocking rules (from upstream 1.7)
+    for rulefile in naxsi_blocking_scanner.rules naxsi_blocking_web.rules \
+                    naxsi_blocking_wordpress.rules naxsi_blocking_php.rules \
+                    naxsi_blocking_sql.rules; do
+        if [[ -f "${SCRIPT_DIR}/${rulefile}" ]]; then
+            cp "${SCRIPT_DIR}/${rulefile}" "/etc/nginx/${rulefile}"
+            chmod 644 "/etc/nginx/${rulefile}"
+        fi
+    done
+
     # Runtime rules
     cp "${SCRIPT_DIR}/naxsi.rules" /etc/nginx/naxsi.rules
     chmod 644 /etc/nginx/naxsi.rules
+
+    # Empty whitelist file (managed by naxsi-manager)
+    touch /etc/nginx/naxsi_whitelist.rules
+    chmod 644 /etc/nginx/naxsi_whitelist.rules
 
     # Block page
     cp "${SCRIPT_DIR}/block.html" /var/www/html/block.html
     chmod 644 /var/www/html/block.html
 
+    # Install naxsi-manager tool
+    cp "${SCRIPT_DIR}/naxsi-manager.sh" /usr/local/bin/naxsi-manager
+    chmod 755 /usr/local/bin/naxsi-manager
+
     # Generate nginx.conf
     generate_nginx_conf
 
     log_info "Naxsi configuration installed."
+    log_info "Use 'sudo naxsi-manager' to manage learning mode and whitelists."
 }
 
 generate_nginx_conf() {
@@ -354,6 +373,13 @@ http {
     # --- Naxsi Core Rules ---
     include /etc/nginx/naxsi_core.rules;
 
+    # --- Naxsi Blocking Rules (from upstream 1.7) ---
+    include /etc/nginx/naxsi_blocking_scanner.rules;
+    include /etc/nginx/naxsi_blocking_web.rules;
+    # include /etc/nginx/naxsi_blocking_wordpress.rules;  # Uncomment if running WordPress
+    include /etc/nginx/naxsi_blocking_php.rules;
+    include /etc/nginx/naxsi_blocking_sql.rules;
+
     # --- Additional configs ---
     include /etc/nginx/conf.d/*.conf;
     include /etc/nginx/sites-enabled/*;
@@ -367,6 +393,7 @@ $(echo -e "$backend_block")    }
 
         location / {
             include /etc/nginx/naxsi.rules;
+            include /etc/nginx/naxsi_whitelist.rules;
             proxy_pass http://backend;
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
@@ -534,8 +561,13 @@ do_uninstall() {
     rm -f /etc/nginx/modules/ngx_http_naxsi_module.so
     rm -f /etc/nginx/naxsi_core.rules
     rm -f /etc/nginx/naxsi.rules
+    rm -f /etc/nginx/naxsi_whitelist.rules
+    rm -f /etc/nginx/naxsi_whitelist_pending.rules
+    rm -f /etc/nginx/naxsi_blocking_*.rules
     rm -f /var/www/html/block.html
     rm -f /usr/local/bin/naxsi-config-sync.sh
+    rm -f /usr/local/bin/naxsi-manager
+    rm -rf /etc/nginx/naxsi_backups
 
     # Remove cron entry
     if crontab -l 2>/dev/null | grep -qF "naxsi-config-sync"; then
@@ -623,6 +655,9 @@ print_summary() {
     echo -e "  Test WAF is working:"
     echo "    curl 'http://${VIP}/?q=<script>alert(1)</script>'"
     echo "    (should be blocked)"
+    echo ""
+    echo -e "  ${BLUE}Manage learning mode & whitelists:${NC}"
+    echo "    sudo naxsi-manager"
     echo ""
 }
 

@@ -1,7 +1,7 @@
 # Naxsi WAF — Nginx Web Application Firewall
 
-High-availability Nginx reverse proxy with Naxsi WAF, Keepalived failover,
-and automatic configuration synchronization.
+High-availability Nginx reverse proxy with **Naxsi 1.7** WAF, Keepalived
+failover, and automatic configuration synchronization.
 
 Supports **Ubuntu 22.04** and **Ubuntu 24.04**.
 
@@ -51,7 +51,7 @@ ssh-copy-id kien@192.168.18.71
 --peer-ip ADDRESS         Primary server IP for config sync (backup only)
 --peer-user USER          SSH user on primary server
 --vrrp-password PASS      VRRP auth password (must match on both nodes)
---naxsi-version VER       Naxsi version (default: 1.6)
+--naxsi-version VER       Naxsi version (default: 1.7)
 --skip-keepalived         Skip Keepalived installation
 --skip-sync               Skip config sync setup
 --uninstall               Remove Naxsi components (keeps Nginx)
@@ -61,33 +61,138 @@ ssh-copy-id kien@192.168.18.71
 
 ## What Gets Installed
 
-| Component    | Description                              |
-|-------------|------------------------------------------|
-| Nginx       | Reverse proxy with Naxsi WAF module      |
-| Naxsi       | WAF rules for SQL/XSS/RFI/traversal     |
-| Keepalived  | VRRP failover with health checks         |
-| Config Sync | Cron + rsync to sync config from primary |
+| Component      | Description                                        |
+|---------------|----------------------------------------------------|
+| Nginx         | Reverse proxy with Naxsi WAF module                |
+| Naxsi 1.7     | WAF rules for SQL/XSS/RFI/traversal + blocking    |
+| Blocking Rules| Scanner, web security, PHP, SQL injection, WordPress|
+| naxsi-manager | Interactive tool for learning mode & whitelists    |
+| Keepalived    | VRRP failover with health checks                   |
+| Config Sync   | Cron + rsync to sync config from primary           |
 
 ### File locations after install
 
 ```
-/etc/nginx/nginx.conf                    Main Nginx config
-/etc/nginx/naxsi.rules                   WAF runtime rules (thresholds)
-/etc/nginx/naxsi_core.rules              WAF detection patterns
-/etc/nginx/modules/ngx_http_naxsi_module.so  Compiled module
-/etc/keepalived/keepalived.conf          HA configuration
-/etc/keepalived/check_nginx.sh           Nginx health check
-/var/www/html/block.html                 Block page
-/usr/local/bin/naxsi-config-sync.sh      Sync script (backup only)
-/var/log/naxsi-install.log               Install log
-/var/log/naxsi-sync.log                  Sync log (backup only)
+/etc/nginx/nginx.conf                       Main Nginx config
+/etc/nginx/naxsi.rules                      WAF runtime rules (thresholds)
+/etc/nginx/naxsi_core.rules                 Core WAF detection patterns
+/etc/nginx/naxsi_blocking_scanner.rules     Scanner/bot blocking rules
+/etc/nginx/naxsi_blocking_web.rules         Web security rules (CVEs, probes)
+/etc/nginx/naxsi_blocking_wordpress.rules   WordPress-specific rules (disabled by default)
+/etc/nginx/naxsi_blocking_php.rules         PHP security rules
+/etc/nginx/naxsi_blocking_sql.rules         Advanced SQL injection rules
+/etc/nginx/naxsi_whitelist.rules            User-approved whitelist rules
+/etc/nginx/modules/ngx_http_naxsi_module.so Compiled module
+/etc/keepalived/keepalived.conf             HA configuration
+/usr/local/bin/naxsi-manager                Learning mode & whitelist manager
+/var/www/html/block.html                    Block page
+```
+
+---
+
+## Naxsi Manager — Learning Mode & Whitelists
+
+After install, use the interactive manager to tune the WAF:
+
+```bash
+sudo naxsi-manager
+```
+
+### Workflow
+
+```
+1. Enable learning mode    →  WAF logs but doesn't block
+2. Send normal traffic     →  Browse your site normally
+3. Generate whitelist      →  Tool parses logs into whitelist rules
+4. Review rules            →  Accept, reject, or edit each rule
+5. Apply approved rules    →  Whitelist saved and Nginx reloaded
+6. Disable learning mode   →  WAF actively blocks again
+```
+
+### Commands
+
+```
+sudo naxsi-manager              Interactive menu (recommended)
+sudo naxsi-manager status       Show current mode & statistics
+sudo naxsi-manager learn-on     Enable learning mode
+sudo naxsi-manager learn-off    Disable learning mode
+sudo naxsi-manager generate     Parse logs → generate whitelist rules
+sudo naxsi-manager review       Interactively review pending rules (y/n/edit)
+sudo naxsi-manager apply        Apply pending rules after review
+sudo naxsi-manager show         Show active whitelist rules
+sudo naxsi-manager show-pending Show pending rules awaiting review
+sudo naxsi-manager remove       Remove a specific whitelist rule
+sudo naxsi-manager clear-logs   Clear Naxsi events from error log
+```
+
+### Example: Tuning a new site
+
+```bash
+# Step 1: Enable learning
+sudo naxsi-manager learn-on
+
+# Step 2: Browse your site normally for a while (or run automated tests)
+
+# Step 3: Generate rules from what was logged
+sudo naxsi-manager generate
+
+# Step 4: Review each rule interactively
+sudo naxsi-manager review
+#   [y] accept   [n] reject   [e] edit   [s] skip   [q] quit
+
+# Step 5: Disable learning — WAF is now protecting with your whitelists
+sudo naxsi-manager learn-off
+```
+
+---
+
+## Testing the WAF
+
+```bash
+# Should be blocked (XSS)
+curl 'http://YOUR_VIP/?q=<script>alert(1)</script>'
+
+# Should be blocked (SQL injection)
+curl "http://YOUR_VIP/?id=1' OR '1'='1"
+
+# Should pass (normal request)
+curl 'http://YOUR_VIP/'
+```
+
+---
+
+## WAF Rules Reference
+
+### Score thresholds (naxsi.rules)
+
+| Score Variable | Threshold | Category               |
+|---------------|-----------|------------------------|
+| `$SQL`        | >= 8      | SQL Injection          |
+| `$XSS`       | >= 8      | Cross-Site Scripting   |
+| `$RFI`       | >= 8      | Remote File Inclusion  |
+| `$TRAVERSAL` | >= 5      | Directory Traversal    |
+| `$UPLOAD`    | >= 5      | File Upload            |
+| `$UWA`       | >= 8      | Unwanted Access (scanners, bots, probes) |
+| `$EVADE`     | >= 4      | Evasion Technique      |
+
+### Blocking rules (from Naxsi 1.7 upstream)
+
+| File                                | What it blocks                         |
+|-------------------------------------|----------------------------------------|
+| `naxsi_blocking_scanner.rules`      | Security scanners, bots, malicious UAs |
+| `naxsi_blocking_web.rules`          | CVE exploits, exposed services, probes |
+| `naxsi_blocking_wordpress.rules`    | WordPress-specific attacks (disabled by default) |
+| `naxsi_blocking_php.rules`          | PHP admin panels, eval, phpinfo        |
+| `naxsi_blocking_sql.rules`          | Advanced SQL injection patterns        |
+
+To enable WordPress rules, uncomment the line in `/etc/nginx/nginx.conf`:
+```
+include /etc/nginx/naxsi_blocking_wordpress.rules;
 ```
 
 ---
 
 ## Manual Install
-
-If you prefer to install step by step:
 
 ### 1. Install dependencies
 
@@ -107,7 +212,7 @@ sudo systemctl enable nginx
 ### 3. Build Naxsi module
 
 ```bash
-export NAXSI_VER=1.6
+export NAXSI_VER=1.7
 export NGINX_VER=$(nginx -v 2>&1 | grep -oP '\d+\.\d+\.\d+')
 
 wget https://github.com/wargio/naxsi/releases/download/$NAXSI_VER/naxsi-$NAXSI_VER-src-with-deps.tar.gz
@@ -128,77 +233,21 @@ sudo cp objs/ngx_http_naxsi_module.so /etc/nginx/modules/
 ### 4. Copy configuration files
 
 ```bash
-sudo cp naxsi.rules naxsi_core.rules nginx.conf /etc/nginx/
+sudo cp naxsi.rules naxsi_core.rules naxsi_blocking_*.rules nginx.conf /etc/nginx/
+sudo touch /etc/nginx/naxsi_whitelist.rules
 sudo cp block.html /var/www/html/
 sudo cp check_nginx.sh /etc/keepalived/
 sudo cp keepalived.conf /etc/keepalived/
+sudo cp naxsi-manager.sh /usr/local/bin/naxsi-manager && sudo chmod 755 /usr/local/bin/naxsi-manager
 ```
 
 Edit the config files to match your environment (IPs, interface, passwords).
 
-### 5. Install Keepalived
-
-```bash
-sudo apt install -y keepalived
-sudo systemctl enable keepalived
-sudo systemctl restart keepalived
-```
-
-### 6. Set up config sync (backup server only)
-
-```bash
-ssh-keygen
-ssh-copy-id user@primary-server-ip
-sudo crontab -e
-# Add: * * * * * /path/to/configsync.sh
-```
-
-### 7. Restart services
+### 5. Restart services
 
 ```bash
 sudo nginx -t && sudo systemctl restart nginx
-sudo systemctl restart keepalived
 ```
-
----
-
-## Testing the WAF
-
-Test that Naxsi blocks malicious requests:
-
-```bash
-# Should be blocked (XSS)
-curl 'http://YOUR_VIP/?q=<script>alert(1)</script>'
-
-# Should be blocked (SQL injection)
-curl "http://YOUR_VIP/?id=1' OR '1'='1"
-
-# Should pass (normal request)
-curl 'http://YOUR_VIP/'
-```
-
----
-
-## Tuning WAF Rules
-
-### Adjusting thresholds
-
-Edit `/etc/nginx/naxsi.rules` to change blocking thresholds:
-
-```
-CheckRule "$SQL >= 8" BLOCK;     # SQL injection score threshold
-CheckRule "$XSS >= 8" BLOCK;     # XSS score threshold
-CheckRule "$RFI >= 8" BLOCK;     # Remote file inclusion threshold
-CheckRule "$TRAVERSAL >= 5" BLOCK; # Directory traversal threshold
-CheckRule "$UPLOAD >= 5" BLOCK;  # File upload threshold
-```
-
-Lower values = stricter (more false positives). Higher values = more permissive.
-
-### Learning mode
-
-Uncomment `LearningMode;` in `naxsi.rules` to log but not block. Review
-`/var/log/nginx/error.log` for triggered rules, then create whitelists.
 
 ---
 
@@ -208,4 +257,5 @@ Uncomment `LearningMode;` in `naxsi.rules` to log but not block. Review
 sudo bash install.sh --uninstall
 ```
 
-This removes Naxsi config and module. Nginx and Keepalived remain installed.
+This removes Naxsi config, module, blocking rules, whitelist, and manager.
+Nginx and Keepalived remain installed.
