@@ -5,13 +5,50 @@ failover, and automatic configuration synchronization.
 
 Supports **Ubuntu 22.04** and **Ubuntu 24.04**.
 
+## Features
+
+- **Naxsi 1.7** WAF module — SQL injection, XSS, RFI, directory traversal, file upload detection
+- **LibInjection** integration for advanced SQL/XSS detection
+- **Extended blocking rules** — scanners, bots, CVEs, PHP, WordPress, advanced SQL injection
+- **Interactive whitelist manager** (`naxsi-manager`) — learning mode with hit count statistics
+- **AI security agent** (`naxsi-ai-agent`) — autonomous log analysis and access decisions
+- **CI/CD auto rule generation** (`naxsi-ci`) — automated whitelist rules from test suites
+- **High availability** — Keepalived VRRP failover with health checks
+- **Config sync** — rsync-based synchronization between primary and backup nodes
+- **One-command installer** — fully automated setup
+
+## Architecture
+
+```
+                      ┌──────────────────┐
+                      │   Virtual IP     │
+                      │  (Keepalived)    │
+                      └────────┬─────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                                 │
+    ┌─────────▼─────────┐           ┌───────────▼─────────┐
+    │   Nginx + Naxsi   │           │   Nginx + Naxsi     │
+    │   (Primary)       │◄──rsync──►│   (Backup)          │
+    └─────────┬─────────┘           └───────────┬─────────┘
+              │                                 │
+              └────────────────┬────────────────┘
+              ┌────────────────┼────────────────┐
+              │                                 │
+    ┌─────────▼─────────┐           ┌───────────▼─────────┐
+    │  Backend Server 1 │           │  Backend Server 2   │
+    └───────────────────┘           └─────────────────────┘
+```
+
 ---
 
-## Quick Install (1 command)
+## Quick Install
 
 ### Primary server
 
 ```bash
+git clone https://github.com/kiennt048/naxsi.git
+cd naxsi
 sudo bash install.sh \
   --role primary \
   --vip 192.168.18.70 \
@@ -41,34 +78,36 @@ ssh-copy-id kien@192.168.18.71
 
 ### All options
 
-```
---role primary|backup     Server role (default: primary)
---vip ADDRESS             Virtual IP for Keepalived
---priority NUMBER         VRRP priority (default: 100 primary, 50 backup)
---interface IFACE         Network interface (default: auto-detected)
---server-ip ADDRESS       This server's real IP (default: auto-detected)
---backend ADDR:PORT       Backend server (repeatable)
---peer-ip ADDRESS         Primary server IP for config sync (backup only)
---peer-user USER          SSH user on primary server
---vrrp-password PASS      VRRP auth password (must match on both nodes)
---naxsi-version VER       Naxsi version (default: 1.7)
---skip-keepalived         Skip Keepalived installation
---skip-sync               Skip config sync setup
---uninstall               Remove Naxsi components (keeps Nginx)
-```
+| Option | Description |
+|--------|-------------|
+| `--role primary\|backup` | Server role (default: primary) |
+| `--vip ADDRESS` | Virtual IP for Keepalived |
+| `--priority NUMBER` | VRRP priority (default: 100 primary, 50 backup) |
+| `--interface IFACE` | Network interface (default: auto-detected) |
+| `--server-ip ADDRESS` | This server's real IP (default: auto-detected) |
+| `--backend ADDR:PORT` | Backend server (repeatable) |
+| `--peer-ip ADDRESS` | Primary server IP for config sync (backup only) |
+| `--peer-user USER` | SSH user on primary server |
+| `--vrrp-password PASS` | VRRP auth password (must match on both nodes) |
+| `--naxsi-version VER` | Naxsi version (default: 1.7) |
+| `--skip-keepalived` | Skip Keepalived installation |
+| `--skip-sync` | Skip config sync setup |
+| `--uninstall` | Remove Naxsi components (keeps Nginx) |
 
 ---
 
 ## What Gets Installed
 
-| Component      | Description                                        |
-|---------------|----------------------------------------------------|
-| Nginx         | Reverse proxy with Naxsi WAF module                |
-| Naxsi 1.7     | WAF rules for SQL/XSS/RFI/traversal + blocking    |
-| Blocking Rules| Scanner, web security, PHP, SQL injection, WordPress|
-| naxsi-manager | Interactive tool for learning mode & whitelists    |
-| Keepalived    | VRRP failover with health checks                   |
-| Config Sync   | Cron + rsync to sync config from primary           |
+| Component | Description |
+|-----------|-------------|
+| Nginx | Reverse proxy with Naxsi WAF module |
+| Naxsi 1.7 | WAF rules for SQL/XSS/RFI/traversal + blocking |
+| Blocking Rules | Scanner, web security, PHP, SQL injection, WordPress |
+| naxsi-manager | Interactive tool for learning mode & whitelists |
+| naxsi-ai-agent | AI security agent for autonomous log analysis |
+| naxsi-ci | CI/CD auto rule generation tool |
+| Keepalived | VRRP failover with health checks |
+| Config Sync | Cron + rsync to sync config from primary |
 
 ### File locations after install
 
@@ -85,6 +124,8 @@ ssh-copy-id kien@192.168.18.71
 /etc/nginx/modules/ngx_http_naxsi_module.so Compiled module
 /etc/keepalived/keepalived.conf             HA configuration
 /usr/local/bin/naxsi-manager                Learning mode & whitelist manager
+/usr/local/bin/naxsi-ai-agent               AI security agent
+/usr/local/bin/naxsi-ci                     CI/CD rule generation tool
 /var/www/html/block.html                    Block page
 ```
 
@@ -234,8 +275,8 @@ The agent does NOT blindly follow user requests. It acts as an independent secur
 ### Security policy
 
 Auto-whitelist requires ALL of:
-- ≥50 hits on the rule
-- ≥10 unique IPs triggering it
+- >= 50 hits on the rule
+- >= 10 unique IPs triggering it
 - Rule risk is low or medium (not high/critical)
 - Not in the never-whitelist list (rules 17, 18, 1202, 1203, 1204)
 
@@ -349,28 +390,40 @@ curl 'http://YOUR_VIP/'
 
 ### Score thresholds (naxsi.rules)
 
-| Score Variable | Threshold | Category               |
-|---------------|-----------|------------------------|
-| `$SQL`        | >= 8      | SQL Injection          |
-| `$XSS`       | >= 8      | Cross-Site Scripting   |
-| `$RFI`       | >= 8      | Remote File Inclusion  |
-| `$TRAVERSAL` | >= 5      | Directory Traversal    |
-| `$UPLOAD`    | >= 5      | File Upload            |
-| `$UWA`       | >= 8      | Unwanted Access (scanners, bots, probes) |
-| `$EVADE`     | >= 4      | Evasion Technique      |
+| Score Variable | Threshold | Category |
+|---------------|-----------|----------|
+| `$SQL` | >= 8 | SQL Injection |
+| `$XSS` | >= 8 | Cross-Site Scripting |
+| `$RFI` | >= 8 | Remote File Inclusion |
+| `$TRAVERSAL` | >= 5 | Directory Traversal |
+| `$UPLOAD` | >= 5 | File Upload |
+| `$UWA` | >= 8 | Unwanted Access (scanners, bots, probes) |
+| `$EVADE` | >= 4 | Evasion Technique |
+
+### Core detection rules (naxsi_core.rules)
+
+| ID Range | Category | Score Variable |
+|----------|----------|---------------|
+| 1-999 | Internal errors | (various) |
+| 1000-1099 | SQL Injection | `$SQL` |
+| 1100-1199 | Remote File Inclusion | `$RFI` |
+| 1200-1299 | Directory Traversal | `$TRAVERSAL` |
+| 1300-1399 | Cross-Site Scripting | `$XSS` |
+| 1400-1500 | Evasion Tricks | `$EVADE` |
+| 1500-1600 | File Uploads | `$UPLOAD` |
 
 ### Blocking rules (from Naxsi 1.7 upstream)
 
-| File                                | What it blocks                         |
-|-------------------------------------|----------------------------------------|
-| `naxsi_blocking_scanner.rules`      | Security scanners, bots, malicious UAs |
-| `naxsi_blocking_web.rules`          | CVE exploits, exposed services, probes |
-| `naxsi_blocking_wordpress.rules`    | WordPress-specific attacks (disabled by default) |
-| `naxsi_blocking_php.rules`          | PHP admin panels, eval, phpinfo        |
-| `naxsi_blocking_sql.rules`          | Advanced SQL injection patterns        |
+| File | What it blocks |
+|------|---------------|
+| `naxsi_blocking_scanner.rules` | Security scanners, bots, malicious UAs |
+| `naxsi_blocking_web.rules` | CVE exploits, exposed services, probes |
+| `naxsi_blocking_wordpress.rules` | WordPress-specific attacks (disabled by default) |
+| `naxsi_blocking_php.rules` | PHP admin panels, eval, phpinfo |
+| `naxsi_blocking_sql.rules` | Advanced SQL injection patterns |
 
 To enable WordPress rules, uncomment the line in `/etc/nginx/nginx.conf`:
-```
+```nginx
 include /etc/nginx/naxsi_blocking_wordpress.rules;
 ```
 
@@ -423,6 +476,8 @@ sudo cp block.html /var/www/html/
 sudo cp check_nginx.sh /etc/keepalived/
 sudo cp keepalived.conf /etc/keepalived/
 sudo cp naxsi-manager.sh /usr/local/bin/naxsi-manager && sudo chmod 755 /usr/local/bin/naxsi-manager
+sudo cp naxsi-ai-agent.sh /usr/local/bin/naxsi-ai-agent && sudo chmod 755 /usr/local/bin/naxsi-ai-agent
+sudo cp naxsi-ci.sh /usr/local/bin/naxsi-ci && sudo chmod 755 /usr/local/bin/naxsi-ci
 ```
 
 Edit the config files to match your environment (IPs, interface, passwords).
@@ -441,5 +496,38 @@ sudo nginx -t && sudo systemctl restart nginx
 sudo bash install.sh --uninstall
 ```
 
-This removes Naxsi config, module, blocking rules, whitelist, and manager.
+This removes Naxsi config, module, blocking rules, whitelist, manager, AI agent, and CI tool.
 Nginx and Keepalived remain installed.
+
+---
+
+## Repository Structure
+
+```
+naxsi/
+├── README.md                        # This file
+├── CLAUDE.md                        # AI assistant guide
+├── install.sh                       # Automated installer for Ubuntu 22.04/24.04
+├── naxsi-manager.sh                 # Interactive learning mode & whitelist manager
+├── naxsi-ai-agent.sh               # AI security agent — autonomous log analysis
+├── naxsi-ci.sh                      # CI/CD auto rule generation
+├── nginx.conf                       # Nginx configuration template
+├── naxsi.rules                      # Naxsi WAF runtime rules (thresholds)
+├── naxsi_core.rules                 # Core WAF detection rules
+├── naxsi_blocking_scanner.rules     # Scanner/bot blocking rules
+├── naxsi_blocking_web.rules         # Web security rules (CVEs, probes)
+├── naxsi_blocking_wordpress.rules   # WordPress-specific rules
+├── naxsi_blocking_php.rules         # PHP security rules
+├── naxsi_blocking_sql.rules         # Advanced SQL injection rules
+├── keepalived.conf                  # Keepalived VRRP HA configuration
+├── configsync.sh                    # Config sync script (rsync)
+├── check_nginx.sh                   # Nginx health check for Keepalived
+├── block.html                       # HTML block page
+└── .gitignore                       # Excludes binaries, logs, editor files
+```
+
+---
+
+## License
+
+This project uses [Naxsi](https://github.com/wargio/naxsi) (GPLv3) as its WAF engine.
