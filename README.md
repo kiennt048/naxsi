@@ -1,0 +1,533 @@
+# Naxsi WAF — Nginx Web Application Firewall
+
+High-availability Nginx reverse proxy with **Naxsi 1.7** WAF, Keepalived
+failover, and automatic configuration synchronization.
+
+Supports **Ubuntu 22.04** and **Ubuntu 24.04**.
+
+## Features
+
+- **Naxsi 1.7** WAF module — SQL injection, XSS, RFI, directory traversal, file upload detection
+- **LibInjection** integration for advanced SQL/XSS detection
+- **Extended blocking rules** — scanners, bots, CVEs, PHP, WordPress, advanced SQL injection
+- **Interactive whitelist manager** (`naxsi-manager`) — learning mode with hit count statistics
+- **AI security agent** (`naxsi-ai-agent`) — autonomous log analysis and access decisions
+- **CI/CD auto rule generation** (`naxsi-ci`) — automated whitelist rules from test suites
+- **High availability** — Keepalived VRRP failover with health checks
+- **Config sync** — rsync-based synchronization between primary and backup nodes
+- **One-command installer** — fully automated setup
+
+## Architecture
+
+```
+                      ┌──────────────────┐
+                      │   Virtual IP     │
+                      │  (Keepalived)    │
+                      └────────┬─────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                                 │
+    ┌─────────▼─────────┐           ┌───────────▼─────────┐
+    │   Nginx + Naxsi   │           │   Nginx + Naxsi     │
+    │   (Primary)       │◄──rsync──►│   (Backup)          │
+    └─────────┬─────────┘           └───────────┬─────────┘
+              │                                 │
+              └────────────────┬────────────────┘
+              ┌────────────────┼────────────────┐
+              │                                 │
+    ┌─────────▼─────────┐           ┌───────────▼─────────┐
+    │  Backend Server 1 │           │  Backend Server 2   │
+    └───────────────────┘           └─────────────────────┘
+```
+
+---
+
+## Quick Install
+
+### Primary server
+
+```bash
+git clone https://github.com/kiennt048/naxsi.git
+cd naxsi
+sudo bash install.sh \
+  --role primary \
+  --vip 192.168.18.70 \
+  --backend 192.168.18.61:80 \
+  --backend 192.168.18.62:80 \
+  --vrrp-password MySecretPass
+```
+
+### Backup server
+
+```bash
+sudo bash install.sh \
+  --role backup \
+  --vip 192.168.18.70 \
+  --backend 192.168.18.61:80 \
+  --backend 192.168.18.62:80 \
+  --peer-ip 192.168.18.71 \
+  --peer-user kien \
+  --vrrp-password MySecretPass
+```
+
+After backup install, copy SSH key to the primary:
+
+```bash
+ssh-copy-id kien@192.168.18.71
+```
+
+### All options
+
+| Option | Description |
+|--------|-------------|
+| `--role primary\|backup` | Server role (default: primary) |
+| `--vip ADDRESS` | Virtual IP for Keepalived |
+| `--priority NUMBER` | VRRP priority (default: 100 primary, 50 backup) |
+| `--interface IFACE` | Network interface (default: auto-detected) |
+| `--server-ip ADDRESS` | This server's real IP (default: auto-detected) |
+| `--backend ADDR:PORT` | Backend server (repeatable) |
+| `--peer-ip ADDRESS` | Primary server IP for config sync (backup only) |
+| `--peer-user USER` | SSH user on primary server |
+| `--vrrp-password PASS` | VRRP auth password (must match on both nodes) |
+| `--naxsi-version VER` | Naxsi version (default: 1.7) |
+| `--skip-keepalived` | Skip Keepalived installation |
+| `--skip-sync` | Skip config sync setup |
+| `--uninstall` | Remove Naxsi components (keeps Nginx) |
+
+---
+
+## What Gets Installed
+
+| Component | Description |
+|-----------|-------------|
+| Nginx | Reverse proxy with Naxsi WAF module |
+| Naxsi 1.7 | WAF rules for SQL/XSS/RFI/traversal + blocking |
+| Blocking Rules | Scanner, web security, PHP, SQL injection, WordPress |
+| naxsi-manager | Interactive tool for learning mode & whitelists |
+| naxsi-ai-agent | AI security agent for autonomous log analysis |
+| naxsi-ci | CI/CD auto rule generation tool |
+| Keepalived | VRRP failover with health checks |
+| Config Sync | Cron + rsync to sync config from primary |
+
+### File locations after install
+
+```
+/etc/nginx/nginx.conf                       Main Nginx config
+/etc/nginx/naxsi.rules                      WAF runtime rules (thresholds)
+/etc/nginx/naxsi_core.rules                 Core WAF detection patterns
+/etc/nginx/naxsi_blocking_scanner.rules     Scanner/bot blocking rules
+/etc/nginx/naxsi_blocking_web.rules         Web security rules (CVEs, probes)
+/etc/nginx/naxsi_blocking_wordpress.rules   WordPress-specific rules (disabled by default)
+/etc/nginx/naxsi_blocking_php.rules         PHP security rules
+/etc/nginx/naxsi_blocking_sql.rules         Advanced SQL injection rules
+/etc/nginx/naxsi_whitelist.rules            User-approved whitelist rules
+/etc/nginx/modules/ngx_http_naxsi_module.so Compiled module
+/etc/keepalived/keepalived.conf             HA configuration
+/usr/local/bin/naxsi-manager                Learning mode & whitelist manager
+/usr/local/bin/naxsi-ai-agent               AI security agent
+/usr/local/bin/naxsi-ci                     CI/CD rule generation tool
+/var/www/html/block.html                    Block page
+```
+
+---
+
+## Naxsi Manager — Learning Mode & Whitelists
+
+After install, use the interactive manager to tune the WAF:
+
+```bash
+sudo naxsi-manager
+```
+
+### Workflow
+
+```
+1. Enable learning mode    →  WAF logs but doesn't block
+2. Send normal traffic     →  Browse your site normally
+3. Generate whitelist      →  Tool parses logs into whitelist rules
+4. Review rules            →  Accept, reject, or edit each rule
+5. Apply approved rules    →  Whitelist saved and Nginx reloaded
+6. Disable learning mode   →  WAF actively blocks again
+```
+
+### Commands
+
+```
+sudo naxsi-manager              Interactive menu (recommended)
+sudo naxsi-manager status       Show current mode & statistics
+sudo naxsi-manager learn-on     Enable learning mode
+sudo naxsi-manager learn-off    Disable learning mode
+sudo naxsi-manager generate     Parse logs → generate whitelist rules (with hit counts)
+sudo naxsi-manager review       Interactively review pending rules (y/n/edit)
+sudo naxsi-manager apply        Apply pending rules after review
+sudo naxsi-manager show         Show active whitelist rules
+sudo naxsi-manager show-pending Show pending rules awaiting review
+sudo naxsi-manager remove       Remove a specific whitelist rule
+sudo naxsi-manager stats        Show log statistics (top rules, URIs, IPs)
+sudo naxsi-manager clear-logs   Clear Naxsi events from error log
+```
+
+### Statistics & hit counts
+
+When you run `generate` or `stats`, the manager analyzes the Nginx error log and shows:
+
+- **Hit counts** — how many times each rule was triggered (high = likely legitimate traffic)
+- **Unique IPs** — how many different clients triggered a rule (1 IP = possible attack, many = normal)
+- **Top rules** — which rule IDs fire most often
+- **Top URIs** — which pages trigger the most WAF events
+
+Rules are sorted by hit count (most triggered first). During `review`, hit counts
+are shown for each rule so you can make informed decisions:
+
+```
+--- Rule 1/5 ---
+  BasicRule wl:1013 "mz:$URL:/api/search|$ARGS_VAR:q";
+  Rule ID: 1013 (simple quote)
+  Match:   mz:$URL:/api/search|$ARGS_VAR:q
+  Hits:    847 events from 312 unique IPs
+```
+
+A rule with 847 hits from 312 IPs is almost certainly legitimate traffic that should
+be whitelisted. A rule with 3 hits from 1 IP is suspicious and should probably be rejected.
+
+### Example: Tuning a new site
+
+```bash
+# Step 1: Enable learning
+sudo naxsi-manager learn-on
+
+# Step 2: Browse your site normally for a while (or run automated tests)
+
+# Step 3: Generate rules from what was logged
+sudo naxsi-manager generate
+
+# Step 4: Review each rule interactively
+sudo naxsi-manager review
+#   [y] accept   [n] reject   [e] edit   [s] skip   [q] quit
+
+# Step 5: Disable learning — WAF is now protecting with your whitelists
+sudo naxsi-manager learn-off
+```
+
+---
+
+## AI Security Agent
+
+The AI security agent (`naxsi-ai-agent`) provides on-demand, autonomous log analysis.
+It runs as a **one-shot command** (not a daemon) — start it, it processes logs, it exits.
+No ongoing cost.
+
+### Commands
+
+```
+sudo naxsi-ai-agent analyze               One-shot log analysis with classification
+sudo naxsi-ai-agent auto-whitelist        Auto-apply rules classified as SAFE
+sudo naxsi-ai-agent investigate <ip>      Why is this IP being blocked?
+sudo naxsi-ai-agent investigate <uri>     Why is this URI triggering rules?
+sudo naxsi-ai-agent request <ip> [uri]    User requests access — agent decides
+sudo naxsi-ai-agent report                Security summary report
+sudo naxsi-ai-agent policy                Show security thresholds
+```
+
+### Typical workflow
+
+**Scenario 1: Initial setup — bulk process existing logs**
+
+```bash
+# You already have tons of access/error logs accumulated
+# Run the agent once to analyze everything and auto-whitelist safe patterns
+sudo naxsi-ai-agent analyze                # See what's happening
+sudo naxsi-ai-agent auto-whitelist         # Apply safe rules (agent confirms)
+# Done. Agent exits. No ongoing cost.
+```
+
+**Scenario 2: User reports they can't connect**
+
+```bash
+# User says: "I can't access the checkout page from 10.0.0.50"
+# You ask the agent to investigate:
+sudo naxsi-ai-agent investigate 10.0.0.50
+
+# Agent responds with:
+#   - Which rules blocked this IP
+#   - Risk level of each rule
+#   - Whether other IPs trigger the same rules
+#   - Its APPROVE/DENY recommendation with reasoning
+
+# Or let the agent make a formal decision:
+sudo naxsi-ai-agent request 10.0.0.50 /checkout
+# Agent will APPROVE if traffic is safe, DENY if it looks like an attack
+# It explains WHY in both cases
+```
+
+### How the agent decides
+
+The agent does NOT blindly follow user requests. It acts as an independent security engineer:
+
+| Signal | Meaning | Decision |
+|--------|---------|----------|
+| Critical rule triggered (libinjection, /etc/passwd) | Real attack | **DENY** always |
+| High-risk + few IPs | Possible attack | **DENY**, pending review |
+| Low-risk + many hits + many IPs | False positive | **APPROVE** |
+| Low data | Can't tell yet | **DEFER**, suggest learning mode |
+| 80%+ hits from one IP | Targeted attack or bot | **SUSPICIOUS** |
+
+### Security policy
+
+Auto-whitelist requires ALL of:
+- >= 50 hits on the rule
+- >= 10 unique IPs triggering it
+- Rule risk is low or medium (not high/critical)
+- Not in the never-whitelist list (rules 17, 18, 1202, 1203, 1204)
+
+Run `sudo naxsi-ai-agent policy` to see all thresholds.
+
+---
+
+## CI/CD — Auto Rule Generation
+
+When a developer deploys a new feature, `naxsi-ci` automatically generates
+the whitelist rules that feature needs — without compromising security.
+
+### The problem it solves
+
+Developer adds a new `/api/checkout` endpoint with form fields. NAXSI blocks
+legitimate requests because form data contains characters like `=`, `'`, `&`
+that match SQL/XSS rules. Without auto-generation, someone must manually
+create whitelist rules every time a feature ships.
+
+### One-shot mode (recommended)
+
+```bash
+# In your Jenkinsfile / .gitlab-ci.yml / GitHub Actions:
+sudo naxsi-ci auto --test-cmd "npm test" --output rules.txt --merge
+```
+
+This does everything: enable learning -> run your tests -> generate rules -> validate -> merge -> disable learning.
+
+### Step-by-step mode
+
+```bash
+# 1. Start learning (bookmarks log position)
+sudo naxsi-ci learn-start
+
+# 2. Run your app's test suite (functional tests, NOT security tests)
+npm test          # or pytest, go test, mvn test, etc.
+
+# 3. Generate rules from what the tests triggered
+sudo naxsi-ci generate --output rules.txt
+
+# 4. Stop learning
+sudo naxsi-ci learn-stop
+
+# 5. Preview what's new
+sudo naxsi-ci diff --rules rules.txt
+
+# 6. Validate and merge
+sudo naxsi-ci validate --rules rules.txt
+sudo naxsi-ci merge --rules rules.txt
+```
+
+### Pipeline examples
+
+**Jenkinsfile:**
+```groovy
+stage('WAF Rules') {
+    steps {
+        sh 'sudo naxsi-ci auto --test-cmd "npm test" --output rules.txt'
+        sh 'sudo naxsi-ci validate --rules rules.txt'
+        sh 'sudo naxsi-ci merge --rules rules.txt'
+    }
+}
+```
+
+**GitLab CI:**
+```yaml
+waf-rules:
+  stage: deploy
+  script:
+    - sudo naxsi-ci auto --test-cmd "pytest" --output rules.txt
+    - sudo naxsi-ci validate --rules rules.txt
+    - sudo naxsi-ci merge --rules rules.txt
+```
+
+**GitHub Actions:**
+```yaml
+- run: sudo naxsi-ci auto --test-cmd "go test ./..." --output rules.txt --merge
+```
+
+### Security enforcement
+
+The tool enforces security best practices automatically:
+
+| Protection | What happens |
+|------------|-------------|
+| Critical rules (libinjection, /etc/passwd) | **NEVER** whitelisted. Pipeline exits code 2 (FAIL) |
+| High-risk rules (hex encoding, file upload) | Commented out. Require `--force` flag |
+| Overly broad whitelists (no URI scope) | Warning during validation |
+| Too many rules (>200) | Generation fails — tests are too noisy |
+
+**Important:** Run `naxsi-ci` with your **functional tests** (login, checkout, search, etc.), NOT security/penetration tests. Security tests intentionally send attack payloads — those should trigger blocks, not generate whitelists.
+
+---
+
+## Testing the WAF
+
+```bash
+# Should be blocked (XSS)
+curl 'http://YOUR_VIP/?q=<script>alert(1)</script>'
+
+# Should be blocked (SQL injection)
+curl "http://YOUR_VIP/?id=1' OR '1'='1"
+
+# Should pass (normal request)
+curl 'http://YOUR_VIP/'
+```
+
+---
+
+## WAF Rules Reference
+
+### Score thresholds (naxsi.rules)
+
+| Score Variable | Threshold | Category |
+|---------------|-----------|----------|
+| `$SQL` | >= 8 | SQL Injection |
+| `$XSS` | >= 8 | Cross-Site Scripting |
+| `$RFI` | >= 8 | Remote File Inclusion |
+| `$TRAVERSAL` | >= 5 | Directory Traversal |
+| `$UPLOAD` | >= 5 | File Upload |
+| `$UWA` | >= 8 | Unwanted Access (scanners, bots, probes) |
+| `$EVADE` | >= 4 | Evasion Technique |
+
+### Core detection rules (naxsi_core.rules)
+
+| ID Range | Category | Score Variable |
+|----------|----------|---------------|
+| 1-999 | Internal errors | (various) |
+| 1000-1099 | SQL Injection | `$SQL` |
+| 1100-1199 | Remote File Inclusion | `$RFI` |
+| 1200-1299 | Directory Traversal | `$TRAVERSAL` |
+| 1300-1399 | Cross-Site Scripting | `$XSS` |
+| 1400-1500 | Evasion Tricks | `$EVADE` |
+| 1500-1600 | File Uploads | `$UPLOAD` |
+
+### Blocking rules (from Naxsi 1.7 upstream)
+
+| File | What it blocks |
+|------|---------------|
+| `naxsi_blocking_scanner.rules` | Security scanners, bots, malicious UAs |
+| `naxsi_blocking_web.rules` | CVE exploits, exposed services, probes |
+| `naxsi_blocking_wordpress.rules` | WordPress-specific attacks (disabled by default) |
+| `naxsi_blocking_php.rules` | PHP admin panels, eval, phpinfo |
+| `naxsi_blocking_sql.rules` | Advanced SQL injection patterns |
+
+To enable WordPress rules, uncomment the line in `/etc/nginx/nginx.conf`:
+```nginx
+include /etc/nginx/naxsi_blocking_wordpress.rules;
+```
+
+---
+
+## Manual Install
+
+### 1. Install dependencies
+
+```bash
+sudo apt update
+sudo apt install -y build-essential libmaxminddb-dev libpcre3-dev \
+  libpcre3 libssl-dev zlib1g zlib1g-dev wget curl gnupg rsync cron git
+```
+
+### 2. Install Nginx
+
+```bash
+sudo apt install -y nginx
+sudo systemctl enable nginx
+```
+
+### 3. Build Naxsi module
+
+```bash
+export NAXSI_VER=1.7
+export NGINX_VER=$(nginx -v 2>&1 | grep -oP '\d+\.\d+\.\d+')
+
+wget https://github.com/wargio/naxsi/releases/download/$NAXSI_VER/naxsi-$NAXSI_VER-src-with-deps.tar.gz
+wget https://nginx.org/download/nginx-$NGINX_VER.tar.gz
+
+mkdir -p naxsi-$NAXSI_VER
+tar -C naxsi-$NAXSI_VER -xzf naxsi-$NAXSI_VER-src-with-deps.tar.gz
+tar -xzf nginx-$NGINX_VER.tar.gz
+
+cd nginx-$NGINX_VER
+./configure --with-compat --add-dynamic-module=../naxsi-$NAXSI_VER/naxsi_src/
+make modules
+
+sudo mkdir -p /etc/nginx/modules
+sudo cp objs/ngx_http_naxsi_module.so /etc/nginx/modules/
+```
+
+### 4. Copy configuration files
+
+```bash
+sudo cp naxsi.rules naxsi_core.rules naxsi_blocking_*.rules nginx.conf /etc/nginx/
+sudo touch /etc/nginx/naxsi_whitelist.rules
+sudo cp block.html /var/www/html/
+sudo cp check_nginx.sh /etc/keepalived/
+sudo cp keepalived.conf /etc/keepalived/
+sudo cp naxsi-manager.sh /usr/local/bin/naxsi-manager && sudo chmod 755 /usr/local/bin/naxsi-manager
+sudo cp naxsi-ai-agent.sh /usr/local/bin/naxsi-ai-agent && sudo chmod 755 /usr/local/bin/naxsi-ai-agent
+sudo cp naxsi-ci.sh /usr/local/bin/naxsi-ci && sudo chmod 755 /usr/local/bin/naxsi-ci
+```
+
+Edit the config files to match your environment (IPs, interface, passwords).
+
+### 5. Restart services
+
+```bash
+sudo nginx -t && sudo systemctl restart nginx
+```
+
+---
+
+## Uninstall
+
+```bash
+sudo bash install.sh --uninstall
+```
+
+This removes Naxsi config, module, blocking rules, whitelist, manager, AI agent, and CI tool.
+Nginx and Keepalived remain installed.
+
+---
+
+## Repository Structure
+
+```
+naxsi/
+├── README.md                        # This file
+├── CLAUDE.md                        # AI assistant guide
+├── install.sh                       # Automated installer for Ubuntu 22.04/24.04
+├── naxsi-manager.sh                 # Interactive learning mode & whitelist manager
+├── naxsi-ai-agent.sh               # AI security agent — autonomous log analysis
+├── naxsi-ci.sh                      # CI/CD auto rule generation
+├── nginx.conf                       # Nginx configuration template
+├── naxsi.rules                      # Naxsi WAF runtime rules (thresholds)
+├── naxsi_core.rules                 # Core WAF detection rules
+├── naxsi_blocking_scanner.rules     # Scanner/bot blocking rules
+├── naxsi_blocking_web.rules         # Web security rules (CVEs, probes)
+├── naxsi_blocking_wordpress.rules   # WordPress-specific rules
+├── naxsi_blocking_php.rules         # PHP security rules
+├── naxsi_blocking_sql.rules         # Advanced SQL injection rules
+├── keepalived.conf                  # Keepalived VRRP HA configuration
+├── configsync.sh                    # Config sync script (rsync)
+├── check_nginx.sh                   # Nginx health check for Keepalived
+├── block.html                       # HTML block page
+└── .gitignore                       # Excludes binaries, logs, editor files
+```
+
+---
+
+## License
+
+This project uses [Naxsi](https://github.com/wargio/naxsi) (GPLv3) as its WAF engine.
